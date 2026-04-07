@@ -105,11 +105,29 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
 
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
-  return handleToolCall(name, (args ?? {}) as Record<string, unknown>, {
-    accountManager,
-    getProvider,
-    clearProviderCache: (alias: string) => { providerCache.delete(alias); },
-  });
+  try {
+    return await handleToolCall(name, (args ?? {}) as Record<string, unknown>, {
+      accountManager,
+      getProvider,
+      clearProviderCache: (alias: string) => { providerCache.delete(alias); },
+    });
+  } catch (err: any) {
+    // Clear cached provider on auth/connection errors so next call reconnects
+    const alias = (args as any)?.account;
+    if (alias && (err.code === 401 || err.code === 403 || err.message?.includes("invalid_grant") || err.message?.includes("Token"))) {
+      providerCache.delete(alias);
+      console.error(`Cleared provider cache for "${alias}" after auth error`);
+    }
+    return { content: [{ type: "text" as const, text: `Error: ${redactTokens(String(err.message ?? err))}` }], isError: true };
+  }
+});
+
+// Prevent crashes from unhandled rejections (e.g. expired tokens, network errors)
+process.on("unhandledRejection", (err) => {
+  console.error("Unhandled rejection (kept alive):", redactTokens(String(err)));
+});
+process.on("uncaughtException", (err) => {
+  console.error("Uncaught exception (kept alive):", redactTokens(String(err)));
 });
 
 async function main() {
