@@ -1,0 +1,47 @@
+{
+  "name": "mailbox-mcp",
+  "version": "0.2.0",
+  "description": "Multi-account, multi-provider email MCP server",
+  "type": "module",
+  "main": "dist/server.js",
+  "bin": {
+    "mailbox-mcp": "dist/server.js"
+  },
+  "scripts": {
+    "build": "tsc",
+    "dev": "tsc --watch",
+    "start": "node dist/server.js",
+    "test": "vitest run",
+    "test:watch": "vitest"
+  },
+  "keywords": [
+    "mcp",
+    "email",
+    "gmail",
+    "imap",
+    "jmap",
+    "fastmail",
+    "model-context-protocol"
+  ],
+  "author": "Jean Galea",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "https://github.com/jgalea/mailbox-mcp.git"
+  },
+  "engines": {
+    "node": ">=18"
+  },
+  "dependencies": {
+    "@modelcontextprotocol/sdk": "1.28.0",
+    "googleapis": "140.0.1",
+    "imapflow": "1.2.18",
+    "nodemailer": "8.0.4"
+  },
+  "devDependencies": {
+    "@types/node": "20.19.37",
+    "@types/nodemailer": "7.0.11",
+    "typescript": "5.9.3",
+    "vitest": "3.2.4"
+  }
+}
