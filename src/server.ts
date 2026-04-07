@@ -37,7 +37,7 @@ async function getProvider(alias: string): Promise<MailProvider> {
 
   if (config.provider === "gmail") {
     const configDir = accountManager.getAccountDir(alias).replace(/\/accounts\/.*/, "");
-    const gmail = getGmailClient(configDir, alias);
+    const gmail = await getGmailClient(configDir, alias);
     const provider = new GmailProvider(gmail);
     providerCache.set(alias, provider);
     return provider;

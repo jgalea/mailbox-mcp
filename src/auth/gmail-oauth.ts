@@ -1,7 +1,7 @@
 import { createServer } from "node:http";
 import { URL } from "node:url";
 import { randomBytes } from "node:crypto";
-import { google } from "googleapis";
+import { OAuth2Client } from "google-auth-library";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
 import { secureWriteFile, ensureDir } from "../security/permissions.js";
@@ -41,7 +41,7 @@ export async function authenticateGmail(
   alias: string
 ): Promise<void> {
   const { clientId, clientSecret } = loadOAuthKeys(configDir);
-  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, REDIRECT_URI);
+  const oauth2Client = new OAuth2Client(clientId, clientSecret, REDIRECT_URI);
 
   const state = randomBytes(32).toString("hex");
 
@@ -116,7 +116,7 @@ export async function authenticateGmail(
   secureWriteFile(join(accountDir, "token.json"), JSON.stringify(tokens, null, 2));
 }
 
-export function getGmailClient(configDir: string, alias: string) {
+export async function getGmailClient(configDir: string, alias: string) {
   const { clientId, clientSecret } = loadOAuthKeys(configDir);
   const tokenPath = join(configDir, "accounts", alias, "token.json");
 
@@ -125,7 +125,7 @@ export function getGmailClient(configDir: string, alias: string) {
   }
 
   const tokens = JSON.parse(readFileSync(tokenPath, "utf-8"));
-  const oauth2Client = new google.auth.OAuth2(clientId, clientSecret, REDIRECT_URI);
+  const oauth2Client = new OAuth2Client(clientId, clientSecret, REDIRECT_URI);
   oauth2Client.setCredentials(tokens);
 
   oauth2Client.on("tokens", (newTokens) => {
@@ -133,5 +133,9 @@ export function getGmailClient(configDir: string, alias: string) {
     secureWriteFile(tokenPath, JSON.stringify(merged, null, 2));
   });
 
-  return google.gmail({ version: "v1", auth: oauth2Client });
+  // Lazy require() to avoid loading all 300+ googleapis services at startup
+  const { createRequire } = await import("node:module");
+  const req = createRequire(import.meta.url);
+  const { gmail } = req("googleapis/build/src/apis/gmail/index.js");
+  return gmail({ version: "v1", auth: oauth2Client });
 }

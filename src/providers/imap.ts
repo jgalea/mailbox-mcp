@@ -129,7 +129,8 @@ export class ImapProvider implements MailProvider {
 
   async replyToMessage(messageId: string, body: string, options?: ReplyOptions): Promise<string> {
     const original = await this.fetchMessage(messageId, false);
-    const to = [original.from];
+    const replyAddress = original.replyTo || original.from;
+    const to = [replyAddress];
     if (options?.replyAll) { to.push(...original.to, ...original.cc); }
     const subject = original.subject.includes("Re:") ? original.subject : `Re: ${original.subject}`;
     return this.sendMessage(to, subject, body, { html: options?.html });

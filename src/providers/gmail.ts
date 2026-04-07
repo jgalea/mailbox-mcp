@@ -1,5 +1,25 @@
-import type { gmail_v1 } from "googleapis";
 import { fenceEmailContent } from "../security/sanitize.js";
+
+// Lightweight types matching the gmail_v1 shapes we use, to avoid importing
+// the massive googleapis type definitions (which add ~2min to tsc builds).
+interface GmailMessagePartHeader { name?: string | null; value?: string | null; }
+interface GmailMessagePartBody { data?: string | null; attachmentId?: string | null; size?: number | null; }
+interface GmailMessagePart {
+  mimeType?: string | null;
+  filename?: string | null;
+  headers?: GmailMessagePartHeader[] | null;
+  body?: GmailMessagePartBody | null;
+  parts?: GmailMessagePart[] | null;
+}
+interface GmailMessage {
+  id?: string | null;
+  threadId?: string | null;
+  labelIds?: string[] | null;
+  snippet?: string | null;
+  payload?: GmailMessagePart | null;
+}
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type GmailClient = any;
 import { stripCRLF } from "../security/validation.js";
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
@@ -7,11 +27,11 @@ import type {
   DraftOptions, AttachmentInfo,
 } from "./interface.js";
 
-function getHeader(headers: gmail_v1.Schema$MessagePartHeader[] | undefined, name: string): string {
+function getHeader(headers: GmailMessagePartHeader[] | undefined, name: string): string {
   return headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? "";
 }
 
-function decodeBody(payload: gmail_v1.Schema$MessagePart): string {
+function decodeBody(payload: GmailMessagePart): string {
   if (payload.body?.data) {
     return Buffer.from(payload.body.data, "base64url").toString("utf-8");
   }
@@ -28,7 +48,7 @@ function decodeBody(payload: gmail_v1.Schema$MessagePart): string {
   return "";
 }
 
-function extractAttachments(payload: gmail_v1.Schema$MessagePart): AttachmentInfo[] {
+function extractAttachments(payload: GmailMessagePart): AttachmentInfo[] {
   const attachments: AttachmentInfo[] = [];
   if (payload.filename && payload.body?.attachmentId) {
     attachments.push({
@@ -46,7 +66,7 @@ function extractAttachments(payload: gmail_v1.Schema$MessagePart): AttachmentInf
   return attachments;
 }
 
-function parseMessage(data: gmail_v1.Schema$Message, fence: boolean = false): EmailMessage {
+function parseMessage(data: GmailMessage, fence: boolean = false): EmailMessage {
   const headers = data.payload?.headers ?? [];
   const body = decodeBody(data.payload!);
   const attachments = extractAttachments(data.payload!);
@@ -109,7 +129,7 @@ export class GmailProvider implements MailProvider {
     attachments: true, inboxSummary: true,
   };
 
-  constructor(private gmail: gmail_v1.Gmail) {}
+  constructor(private gmail: GmailClient) {}
 
   async searchMessages(query: string, maxResults: number = 20): Promise<EmailSummary[]> {
     const res = await this.gmail.users.messages.list({ userId: "me", q: query, maxResults });
@@ -137,7 +157,7 @@ export class GmailProvider implements MailProvider {
 
   async readThread(threadId: string): Promise<EmailThread> {
     const res = await this.gmail.users.threads.get({ userId: "me", id: threadId, format: "full" });
-    const messages = (res.data.messages ?? []).map((m) => parseMessage(m, true));
+    const messages = (res.data.messages ?? []).map((m: GmailMessage) => parseMessage(m, true));
     return { id: threadId, subject: messages[0]?.subject ?? "", messages };
   }
 
@@ -150,18 +170,20 @@ export class GmailProvider implements MailProvider {
   async replyToMessage(messageId: string, body: string, options?: ReplyOptions): Promise<string> {
     const original = await this.gmail.users.messages.get({
       userId: "me", id: messageId, format: "metadata",
-      metadataHeaders: ["From", "To", "Cc", "Subject", "Message-ID"],
+      metadataHeaders: ["From", "To", "Cc", "Subject", "Message-ID", "Reply-To"],
     });
     const headers = original.data.payload?.headers ?? [];
     const from = getHeader(headers, "From");
+    const replyTo = getHeader(headers, "Reply-To");
     const to = getHeader(headers, "To");
     const cc = getHeader(headers, "Cc");
     const subject = getHeader(headers, "Subject");
     const msgId = getHeader(headers, "Message-ID");
 
+    const replyAddress = replyTo || from;
     const recipients = options?.replyAll
-      ? [from, ...to.split(","), ...cc.split(",")].map((s) => s.trim()).filter(Boolean)
-      : [from];
+      ? [replyAddress, ...to.split(","), ...cc.split(",")].map((s) => s.trim()).filter(Boolean)
+      : [replyAddress];
 
     const reSubject = subject.startsWith("Re:") ? subject : `Re: ${subject}`;
     const raw = encodeEmail(recipients, reSubject, body, {
@@ -217,7 +239,7 @@ export class GmailProvider implements MailProvider {
 
   async listLabels(): Promise<Label[]> {
     const res = await this.gmail.users.labels.list({ userId: "me" });
-    return (res.data.labels ?? []).map((l) => ({
+    return (res.data.labels ?? []).map((l: any) => ({
       id: l.id!, name: l.name!,
       type: (l.type === "system" ? "system" : "user") as "system" | "user",
     }));

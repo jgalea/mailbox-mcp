@@ -39,10 +39,32 @@ Replace `/path/to/mailbox-mcp` with the actual path where you cloned the repo.
 
 ### Add a Gmail Account
 
-1. Download OAuth credentials from [Google Cloud Console](https://console.cloud.google.com/apis/credentials)
-2. Save as `~/.mailbox-mcp/oauth-keys.json`
-3. In Claude Code, run: `authenticate alias="personal" provider="gmail" email="you@gmail.com"`
-4. Complete the OAuth flow in your browser
+#### 1. Create a Google Cloud project
+
+1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create a new project
+2. Enable the **Gmail API**: [APIs & Services > Library > Gmail API](https://console.cloud.google.com/apis/library/gmail.googleapis.com) > Enable
+3. Enable the **People API** (for contact search): [APIs & Services > Library > People API](https://console.cloud.google.com/apis/library/people.googleapis.com) > Enable
+
+#### 2. Set up OAuth consent screen
+
+1. Go to [Google Auth Platform > Branding](https://console.cloud.google.com/auth/branding)
+2. Set **App name** and **User support email**
+3. Go to [Audience](https://console.cloud.google.com/auth/audience), select **External**
+4. Add the Google account you'll sign in with as a **test user** (this must be the exact `@gmail.com` address you use to authenticate, not a workspace alias)
+
+#### 3. Create OAuth credentials
+
+1. Go to [Google Auth Platform > Clients](https://console.cloud.google.com/auth/clients) > Create Client
+2. **Application type**: Desktop app
+3. Click **Create**
+4. Go to [APIs & Services > Credentials](https://console.cloud.google.com/apis/credentials), find your client, and click the download icon to get the JSON
+5. Save the file as `~/.mailbox-mcp/oauth-keys.json`
+
+#### 4. Authenticate
+
+In Claude Code, run: `authenticate alias="personal" provider="gmail" email="you@gmail.com"`
+
+This opens a browser window to complete the OAuth flow. Your tokens are stored locally in `~/.mailbox-mcp/accounts/`.
 
 ### Add an IMAP Account
 
