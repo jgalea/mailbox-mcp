@@ -31,6 +31,13 @@ export interface AttachmentInfo {
   size: number;
 }
 
+/** Resolved outbound attachment, ready to hand to a provider. */
+export interface Attachment {
+  filename: string;
+  mimeType: string;
+  data: Buffer;
+}
+
 export interface Label {
   id: string;
   name: string;
@@ -42,16 +49,19 @@ export interface SendOptions {
   bcc?: string[];
   html?: boolean;
   replyTo?: string;
+  attachments?: Attachment[];
 }
 
 export interface ReplyOptions {
   replyAll?: boolean;
   html?: boolean;
+  attachments?: Attachment[];
 }
 
 export interface ForwardOptions {
   message?: string;
   html?: boolean;
+  attachments?: Attachment[];
 }
 
 export interface DraftOptions {
@@ -59,6 +69,7 @@ export interface DraftOptions {
   bcc?: string[];
   html?: boolean;
   inReplyTo?: string;
+  attachments?: Attachment[];
 }
 
 export interface ProviderCapabilities {

@@ -4,7 +4,7 @@ import { stripCRLF, validateNoSSRF } from "../security/validation.js";
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
   EmailThread, Label, SendOptions, ReplyOptions, ForwardOptions,
-  DraftOptions, AttachmentInfo,
+  DraftOptions, AttachmentInfo, Attachment,
 } from "./interface.js";
 
 interface JmapSession {
@@ -328,8 +328,54 @@ export class JmapProvider implements MailProvider {
     return { id: list[0].id, name: list[0].name };
   }
 
+  /**
+   * Upload an attachment blob to the JMAP server and return a reference
+   * to the server-assigned blobId. Used as the first step in sending or
+   * drafting an email with attachments.
+   */
+  private async uploadBlob(attachment: Attachment): Promise<{ blobId: string; size: number }> {
+    const session = await this.ensureSession();
+    const url = session.uploadUrl.replace("{accountId}", encodeURIComponent(session.accountId));
+    requireSecureUrl(url, "JMAP upload URL");
+    const res = await fetch(url, {
+      method: "POST",
+      headers: {
+        Authorization: this.authHeader,
+        "Content-Type": attachment.mimeType,
+      },
+      body: new Uint8Array(attachment.data),
+      redirect: "error",
+    });
+    if (!res.ok) {
+      throw new Error(`JMAP upload failed: ${res.status}`);
+    }
+    const data = await res.json() as any;
+    if (!data.blobId || typeof data.blobId !== "string") {
+      throw new Error("JMAP upload response missing blobId");
+    }
+    return { blobId: data.blobId, size: data.size ?? attachment.data.length };
+  }
+
+  /** Upload each attachment and return JMAP EmailBodyPart entries referencing the blobIds. */
+  private async buildAttachmentParts(attachments: Attachment[] | undefined): Promise<any[] | undefined> {
+    if (!attachments || attachments.length === 0) return undefined;
+    const parts = [];
+    for (const att of attachments) {
+      const { blobId, size } = await this.uploadBlob(att);
+      parts.push({
+        blobId,
+        type: att.mimeType,
+        name: stripCRLF(att.filename),
+        disposition: "attachment",
+        size,
+      });
+    }
+    return parts;
+  }
+
   async sendMessage(to: string[], subject: string, body: string, options?: SendOptions): Promise<string> {
     const session = await this.ensureSession();
+    const attachmentParts = await this.buildAttachmentParts(options?.attachments);
     const emailCreate: any = {
       from: [{ email: this.email }],
       to: to.map(e => ({ email: stripCRLF(e) })),
@@ -342,6 +388,7 @@ export class JmapProvider implements MailProvider {
       emailCreate.htmlBody = [{ value: body, type: "text/html" }];
       delete emailCreate.textBody;
     }
+    if (attachmentParts) emailCreate.attachments = attachmentParts;
     const responses = await this.apiCall([
       ["Email/set", { accountId: session.accountId, create: { draft0: emailCreate } }, "0"],
       ["EmailSubmission/set", { accountId: session.accountId, create: { sub0: { emailId: "#draft0" } } }, "1"],
@@ -356,7 +403,7 @@ export class JmapProvider implements MailProvider {
     const to = [replyAddress];
     if (options?.replyAll) { to.push(...original.to, ...original.cc); }
     const subject = original.subject.includes("Re:") ? original.subject : `Re: ${original.subject}`;
-    return this.sendMessage(to, subject, body, { html: options?.html });
+    return this.sendMessage(to, subject, body, { html: options?.html, attachments: options?.attachments });
   }
 
   async forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string> {
@@ -365,12 +412,13 @@ export class JmapProvider implements MailProvider {
       ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
       : `---------- Forwarded message ----------\n${original.body}`;
     const subject = original.subject.includes("Fwd:") ? original.subject : `Fwd: ${original.subject}`;
-    return this.sendMessage(to, subject, fwdBody, { html: options?.html });
+    return this.sendMessage(to, subject, fwdBody, { html: options?.html, attachments: options?.attachments });
   }
 
   async createDraft(to: string[], subject: string, body: string, options?: DraftOptions): Promise<string> {
     const session = await this.ensureSession();
     const draftsMailbox = await this.findMailboxByRole("drafts");
+    const attachmentParts = await this.buildAttachmentParts(options?.attachments);
     const emailCreate: any = {
       from: [{ email: this.email }],
       to: to.map(e => ({ email: stripCRLF(e) })),
@@ -386,6 +434,7 @@ export class JmapProvider implements MailProvider {
       delete emailCreate.textBody;
     }
     if (options?.inReplyTo) emailCreate.inReplyTo = options.inReplyTo;
+    if (attachmentParts) emailCreate.attachments = attachmentParts;
     const responses = await this.apiCall([
       ["Email/set", { accountId: session.accountId, create: { draft0: emailCreate } }, "0"],
     ]);

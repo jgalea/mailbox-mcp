@@ -1,4 +1,5 @@
 import { fenceEmailContent } from "../security/sanitize.js";
+import { buildRawMimeMessage } from "./mime.js";
 
 // Lightweight types matching the gmail_v1 shapes we use, to avoid importing
 // the massive googleapis type definitions (which add ~2min to tsc builds).
@@ -97,28 +98,31 @@ function toSummary(msg: EmailMessage): EmailSummary {
   };
 }
 
-function encodeEmail(
-  to: string[], subject: string, body: string,
-  options?: SendOptions & { inReplyTo?: string; references?: string }
-): string {
-  const headers = [
-    `To: ${stripCRLF(to.join(", "))}`,
-    `Subject: ${stripCRLF(subject)}`,
-    `MIME-Version: 1.0`,
-  ];
-  if (options?.cc?.length) headers.push(`Cc: ${stripCRLF(options.cc.join(", "))}`);
-  if (options?.bcc?.length) headers.push(`Bcc: ${stripCRLF(options.bcc.join(", "))}`);
-  if (options?.replyTo) headers.push(`Reply-To: ${stripCRLF(options.replyTo)}`);
-  if (options?.inReplyTo) headers.push(`In-Reply-To: ${stripCRLF(options.inReplyTo)}`);
-  if (options?.references) headers.push(`References: ${stripCRLF(options.references)}`);
+type GmailEncodeOptions = SendOptions & { inReplyTo?: string; references?: string };
 
-  const contentType = options?.html
-    ? "Content-Type: text/html; charset=utf-8"
-    : "Content-Type: text/plain; charset=utf-8";
-  headers.push(contentType);
+function buildEmailBuffer(to: string[], subject: string, body: string, options?: GmailEncodeOptions): Buffer {
+  return buildRawMimeMessage({
+    to, subject, body,
+    cc: options?.cc, bcc: options?.bcc,
+    replyTo: options?.replyTo,
+    inReplyTo: options?.inReplyTo,
+    references: options?.references,
+    html: options?.html,
+    attachments: options?.attachments,
+  });
+}
 
-  const raw = `${headers.join("\r\n")}\r\n\r\n${body}`;
-  return Buffer.from(raw).toString("base64url");
+/**
+ * Gmail's JSON endpoints accept the raw RFC 2822 message as a base64url
+ * string up to ~10 MB total payload. Messages with binary attachments are
+ * better served by the multipart upload endpoint, which supports up to
+ * 35 MB. We flip to media upload whenever attachments are present or the
+ * raw payload is large enough to risk the JSON limit.
+ */
+const MEDIA_UPLOAD_THRESHOLD = 3 * 1024 * 1024;
+function shouldUseMediaUpload(raw: Buffer, options?: GmailEncodeOptions): boolean {
+  if (options?.attachments && options.attachments.length > 0) return true;
+  return raw.length > MEDIA_UPLOAD_THRESHOLD;
 }
 
 export class GmailProvider implements MailProvider {
@@ -162,8 +166,19 @@ export class GmailProvider implements MailProvider {
   }
 
   async sendMessage(to: string[], subject: string, body: string, options?: SendOptions): Promise<string> {
-    const raw = encodeEmail(to, subject, body, options);
-    const res = await this.gmail.users.messages.send({ userId: "me", requestBody: { raw } });
+    const rawBuffer = buildEmailBuffer(to, subject, body, options);
+    if (shouldUseMediaUpload(rawBuffer, options)) {
+      const res = await this.gmail.users.messages.send({
+        userId: "me",
+        requestBody: {},
+        media: { mimeType: "message/rfc822", body: rawBuffer },
+      });
+      return res.data.id!;
+    }
+    const res = await this.gmail.users.messages.send({
+      userId: "me",
+      requestBody: { raw: rawBuffer.toString("base64url") },
+    });
     return res.data.id!;
   }
 
@@ -186,12 +201,25 @@ export class GmailProvider implements MailProvider {
       : [replyAddress];
 
     const reSubject = subject.startsWith("Re:") ? subject : `Re: ${subject}`;
-    const raw = encodeEmail(recipients, reSubject, body, {
-      html: options?.html, inReplyTo: msgId, references: msgId,
-    } as any);
-
+    const encodeOpts: GmailEncodeOptions = {
+      html: options?.html,
+      inReplyTo: msgId,
+      references: msgId,
+      attachments: options?.attachments,
+    };
+    const rawBuffer = buildEmailBuffer(recipients, reSubject, body, encodeOpts);
+    const threadId = original.data.threadId ?? undefined;
+    if (shouldUseMediaUpload(rawBuffer, encodeOpts)) {
+      const res = await this.gmail.users.messages.send({
+        userId: "me",
+        requestBody: { threadId },
+        media: { mimeType: "message/rfc822", body: rawBuffer },
+      });
+      return res.data.id!;
+    }
     const res = await this.gmail.users.messages.send({
-      userId: "me", requestBody: { raw, threadId: original.data.threadId ?? undefined },
+      userId: "me",
+      requestBody: { raw: rawBuffer.toString("base64url"), threadId },
     });
     return res.data.id!;
   }
@@ -202,7 +230,7 @@ export class GmailProvider implements MailProvider {
       ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
       : `---------- Forwarded message ----------\n${original.body}`;
     const fwdSubject = original.subject.startsWith("Fwd:") ? original.subject : `Fwd: ${original.subject}`;
-    return this.sendMessage(to, fwdSubject, fwdBody, { html: options?.html });
+    return this.sendMessage(to, fwdSubject, fwdBody, { html: options?.html, attachments: options?.attachments });
   }
 
   async createDraft(to: string[], subject: string, body: string, options?: DraftOptions): Promise<string> {
@@ -224,9 +252,19 @@ export class GmailProvider implements MailProvider {
       };
     }
 
-    const raw = encodeEmail(to, subject, body, { ...options, ...replyHeaders });
+    const encodeOpts: GmailEncodeOptions = { ...options, ...replyHeaders };
+    const rawBuffer = buildEmailBuffer(to, subject, body, encodeOpts);
+    if (shouldUseMediaUpload(rawBuffer, encodeOpts)) {
+      const res = await this.gmail.users.drafts.create({
+        userId: "me",
+        requestBody: { message: { threadId } },
+        media: { mimeType: "message/rfc822", body: rawBuffer },
+      });
+      return res.data.id!;
+    }
     const res = await this.gmail.users.drafts.create({
-      userId: "me", requestBody: { message: { raw, threadId } },
+      userId: "me",
+      requestBody: { message: { raw: rawBuffer.toString("base64url"), threadId } },
     });
     return res.data.id!;
   }

@@ -1,4 +1,5 @@
 import { registerTool } from "./registry.js";
+import { loadAttachments } from "../security/attachment-loader.js";
 
 const sendCounts = new Map<string, { count: number; resetAt: number }>();
 const MAX_SENDS_PER_MINUTE = 10;
@@ -17,6 +18,13 @@ export function checkSendLimit(account: string): string | null {
   return null;
 }
 
+const attachmentsSchema = {
+  type: "array",
+  items: { type: "string" },
+  description:
+    "Optional list of local file paths to attach. Each path must point to a regular file under 25 MB; total per message is also capped at 25 MB.",
+};
+
 registerTool(
   {
     name: "send_email",
@@ -31,6 +39,7 @@ registerTool(
         cc: { type: "array", items: { type: "string" }, description: "CC recipients" },
         bcc: { type: "array", items: { type: "string" }, description: "BCC recipients" },
         html: { type: "boolean", description: "Send as HTML (default false)" },
+        attachments: attachmentsSchema,
       },
       required: ["account", "to", "subject", "body"],
     },
@@ -38,9 +47,11 @@ registerTool(
   async (args, ctx) => {
     const rateLimitError = checkSendLimit(args.account as string);
     if (rateLimitError) return { content: [{ type: "text", text: rateLimitError }], isError: true };
+    const attachments = loadAttachments(args.attachments as string[] | undefined);
     const provider = await ctx.getProvider(args.account as string);
     const id = await provider.sendMessage(args.to as string[], args.subject as string, args.body as string, {
       cc: args.cc as string[] | undefined, bcc: args.bcc as string[] | undefined, html: args.html as boolean | undefined,
+      attachments,
     });
     return { content: [{ type: "text", text: `Email sent. Message ID: ${id}` }] };
   }
@@ -58,6 +69,7 @@ registerTool(
         body: { type: "string", description: "Reply body" },
         reply_all: { type: "boolean", description: "Reply to all recipients (default false)" },
         html: { type: "boolean", description: "Send as HTML (default false)" },
+        attachments: attachmentsSchema,
       },
       required: ["account", "message_id", "body"],
     },
@@ -65,9 +77,11 @@ registerTool(
   async (args, ctx) => {
     const rateLimitError = checkSendLimit(args.account as string);
     if (rateLimitError) return { content: [{ type: "text", text: rateLimitError }], isError: true };
+    const attachments = loadAttachments(args.attachments as string[] | undefined);
     const provider = await ctx.getProvider(args.account as string);
     const id = await provider.replyToMessage(args.message_id as string, args.body as string, {
       replyAll: args.reply_all as boolean | undefined, html: args.html as boolean | undefined,
+      attachments,
     });
     return { content: [{ type: "text", text: `Reply sent. Message ID: ${id}` }] };
   }
@@ -85,6 +99,7 @@ registerTool(
         to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" },
         message: { type: "string", description: "Optional message to add above the forwarded content" },
         html: { type: "boolean", description: "Send as HTML (default false)" },
+        attachments: attachmentsSchema,
       },
       required: ["account", "message_id", "to"],
     },
@@ -92,9 +107,11 @@ registerTool(
   async (args, ctx) => {
     const rateLimitError = checkSendLimit(args.account as string);
     if (rateLimitError) return { content: [{ type: "text", text: rateLimitError }], isError: true };
+    const attachments = loadAttachments(args.attachments as string[] | undefined);
     const provider = await ctx.getProvider(args.account as string);
     const id = await provider.forwardMessage(args.message_id as string, args.to as string[], {
       message: args.message as string | undefined, html: args.html as boolean | undefined,
+      attachments,
     });
     return { content: [{ type: "text", text: `Forwarded. Message ID: ${id}` }] };
   }
@@ -115,15 +132,18 @@ registerTool(
         bcc: { type: "array", items: { type: "string" }, description: "BCC recipients" },
         html: { type: "boolean", description: "Send as HTML (default false)" },
         in_reply_to: { type: "string", description: "Message ID to create draft as reply to" },
+        attachments: attachmentsSchema,
       },
       required: ["account", "to", "subject", "body"],
     },
   },
   async (args, ctx) => {
+    const attachments = loadAttachments(args.attachments as string[] | undefined);
     const provider = await ctx.getProvider(args.account as string);
     const id = await provider.createDraft(args.to as string[], args.subject as string, args.body as string, {
       cc: args.cc as string[] | undefined, bcc: args.bcc as string[] | undefined,
       html: args.html as boolean | undefined, inReplyTo: args.in_reply_to as string | undefined,
+      attachments,
     });
     return { content: [{ type: "text", text: `Draft created. Draft ID: ${id}` }] };
   }

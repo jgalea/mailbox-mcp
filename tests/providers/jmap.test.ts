@@ -260,6 +260,66 @@ describe("JmapProvider", () => {
     expect(id).toBe("d-new");
   });
 
+  it("sendMessage uploads attachments and references blobIds", async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      // blob upload response
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ blobId: "B1", size: 13, type: "application/pdf" }) })
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Email/set", { created: { "draft0": { id: "m-att" } } }, "0"],
+        ["EmailSubmission/set", { created: { "sub0": { id: "s1" } } }, "1"],
+      ]));
+
+    const id = await provider.sendMessage(["to@example.com"], "Hi", "Body", {
+      attachments: [{ filename: "report.pdf", mimeType: "application/pdf", data: Buffer.from("%PDF-1.4\nhi") }],
+    });
+    expect(id).toBe("m-att");
+
+    // Second fetch call is the upload
+    const uploadCall = mockFetch.mock.calls[1];
+    expect(uploadCall[0]).toBe("https://api.fastmail.com/jmap/upload/u1234/");
+    expect(uploadCall[1].method).toBe("POST");
+    expect(uploadCall[1].headers["Content-Type"]).toBe("application/pdf");
+
+    // Third fetch call is the Email/set with attachments referencing the blobId
+    const apiCall = JSON.parse(mockFetch.mock.calls[2][1].body);
+    const created = apiCall.methodCalls[0][1].create.draft0;
+    expect(created.attachments).toHaveLength(1);
+    expect(created.attachments[0]).toMatchObject({
+      blobId: "B1",
+      type: "application/pdf",
+      name: "report.pdf",
+      disposition: "attachment",
+    });
+  });
+
+  it("createDraft uploads attachments and references blobIds", async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      // Drafts mailbox lookup
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Mailbox/query", { ids: ["mbox-drafts"] }, "0"],
+        ["Mailbox/get", { list: [{ id: "mbox-drafts", name: "Drafts", role: "drafts" }] }, "1"],
+      ]))
+      // Blob upload
+      .mockResolvedValueOnce({ ok: true, json: async () => ({ blobId: "B2", size: 5, type: "text/plain" }) })
+      // Email/set
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Email/set", { created: { "draft0": { id: "d-att" } } }, "0"],
+      ]));
+
+    const id = await provider.createDraft(["to@example.com"], "Draft", "Body", {
+      attachments: [{ filename: "notes.txt", mimeType: "text/plain", data: Buffer.from("hello") }],
+    });
+    expect(id).toBe("d-att");
+
+    const apiCall = JSON.parse(mockFetch.mock.calls[3][1].body);
+    const created = apiCall.methodCalls[0][1].create.draft0;
+    expect(created.attachments).toHaveLength(1);
+    expect(created.attachments[0].blobId).toBe("B2");
+    expect(created.attachments[0].name).toBe("notes.txt");
+  });
+
   it("trashMessages moves emails to trash mailbox", async () => {
     mockFetch
       .mockResolvedValueOnce(mockSessionResponse())

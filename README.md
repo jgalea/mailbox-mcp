@@ -106,10 +106,10 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 | `search_emails` | Search messages |
 | `read_email` | Read a message |
 | `read_thread` | Read a conversation thread |
-| `send_email` | Send a new email |
-| `reply_email` | Reply to a message |
-| `forward_email` | Forward a message |
-| `create_draft` | Create a draft (supports reply drafts via `in_reply_to`) |
+| `send_email` | Send a new email (supports `attachments`) |
+| `reply_email` | Reply to a message (supports `attachments`) |
+| `forward_email` | Forward a message (supports `attachments`) |
+| `create_draft` | Create a draft (supports reply drafts via `in_reply_to`, `attachments`) |
 | `trash_emails` | Trash messages |
 | `list_labels` | List labels/folders |
 | `create_label` | Create a label/folder |
@@ -141,6 +141,19 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 | `bulk_unsubscribe` | Bulk unsubscribe |
 | `search_contacts` | Search contacts |
 | `list_send_as` | List send-as aliases |
+
+## Sending attachments
+
+`send_email`, `reply_email`, `forward_email`, and `create_draft` accept an optional `attachments` parameter — an array of local file paths. The server reads each file, detects its MIME type from the extension, and embeds it in the outgoing message (or draft).
+
+```
+send_email account="personal" to=["friend@example.com"] subject="The report" body="See attached." attachments=["/path/to/report.pdf", "/path/to/chart.png"]
+```
+
+- Each file must be a regular file ≤ 25 MB; total per message is capped at 25 MB (Gmail's hard limit).
+- Paths are resolved through any symlinks, and filenames are stripped of CRLF before going into headers.
+- Gmail routes messages with attachments through the multipart upload endpoint (35 MB API limit) instead of the JSON endpoint, so the 25 MB message cap is the real ceiling.
+- JMAP uploads each file to the server's upload URL first, then references the resulting blobIds in the Email/set call.
 
 ## License
 

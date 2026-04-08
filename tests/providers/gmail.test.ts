@@ -104,6 +104,46 @@ describe("GmailProvider", () => {
     expect(mockGmail.users.messages.trash).toHaveBeenCalledTimes(3);
   });
 
+  describe("outbound attachments", () => {
+    const pdfAttachment = {
+      filename: "report.pdf",
+      mimeType: "application/pdf",
+      data: Buffer.from("%PDF-1.4\nhello"),
+    };
+
+    it("sendMessage uses media upload when attachments are present", async () => {
+      mockGmail.users.messages.send.mockResolvedValue({ data: { id: "sent-1" } });
+      const id = await provider.sendMessage(["x@y.com"], "s", "b", { attachments: [pdfAttachment] });
+      expect(id).toBe("sent-1");
+      const call = mockGmail.users.messages.send.mock.calls[0][0];
+      expect(call.media).toBeDefined();
+      expect(call.media.mimeType).toBe("message/rfc822");
+      expect(Buffer.isBuffer(call.media.body)).toBe(true);
+      expect(call.requestBody.raw).toBeUndefined();
+      // Raw body should contain the attachment filename in a Content-Disposition header
+      expect(call.media.body.toString()).toContain("report.pdf");
+      expect(call.media.body.toString()).toContain("multipart/mixed");
+    });
+
+    it("sendMessage still uses raw base64 path for small plain emails", async () => {
+      mockGmail.users.messages.send.mockResolvedValue({ data: { id: "sent-2" } });
+      await provider.sendMessage(["x@y.com"], "s", "b");
+      const call = mockGmail.users.messages.send.mock.calls[0][0];
+      expect(call.media).toBeUndefined();
+      expect(typeof call.requestBody.raw).toBe("string");
+    });
+
+    it("createDraft uses media upload when attachments are present and preserves threadId", async () => {
+      mockGmail.users.drafts.create.mockResolvedValue({ data: { id: "draft-1" } });
+      const id = await provider.createDraft(["x@y.com"], "s", "b", { attachments: [pdfAttachment] });
+      expect(id).toBe("draft-1");
+      const call = mockGmail.users.drafts.create.mock.calls[0][0];
+      expect(call.media).toBeDefined();
+      expect(call.media.mimeType).toBe("message/rfc822");
+      expect(call.requestBody.message.raw).toBeUndefined();
+    });
+  });
+
   it("listLabels returns Label array", async () => {
     mockGmail.users.labels.list.mockResolvedValue({
       data: {

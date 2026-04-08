@@ -2,10 +2,11 @@ import type { ImapFlow } from "imapflow";
 import type { Transporter } from "nodemailer";
 import { fenceEmailContent } from "../security/sanitize.js";
 import { stripCRLF } from "../security/validation.js";
+import { buildRawMimeMessage } from "./mime.js";
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
   EmailThread, Label, SendOptions, ReplyOptions, ForwardOptions,
-  DraftOptions, AttachmentInfo,
+  DraftOptions, AttachmentInfo, Attachment,
 } from "./interface.js";
 
 function formatAddress(addr: { address?: string; name?: string } | undefined): string {
@@ -123,6 +124,7 @@ export class ImapProvider implements MailProvider {
       bcc: options?.bcc ? stripCRLF(options.bcc.join(", ")) : undefined,
       subject: stripCRLF(subject),
       [options?.html ? "html" : "text"]: body,
+      attachments: toNodemailerAttachments(options?.attachments),
     });
     return result.messageId ?? "";
   }
@@ -133,7 +135,7 @@ export class ImapProvider implements MailProvider {
     const to = [replyAddress];
     if (options?.replyAll) { to.push(...original.to, ...original.cc); }
     const subject = original.subject.includes("Re:") ? original.subject : `Re: ${original.subject}`;
-    return this.sendMessage(to, subject, body, { html: options?.html });
+    return this.sendMessage(to, subject, body, { html: options?.html, attachments: options?.attachments });
   }
 
   async forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string> {
@@ -142,24 +144,22 @@ export class ImapProvider implements MailProvider {
       ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
       : `---------- Forwarded message ----------\n${original.body}`;
     const subject = original.subject.includes("Fwd:") ? original.subject : `Fwd: ${original.subject}`;
-    return this.sendMessage(to, subject, fwdBody, { html: options?.html });
+    return this.sendMessage(to, subject, fwdBody, { html: options?.html, attachments: options?.attachments });
   }
 
   async createDraft(to: string[], subject: string, body: string, options?: DraftOptions): Promise<string> {
-    const raw = [
-      `From: ${this.email}`,
-      `To: ${stripCRLF(to.join(", "))}`,
-      `Subject: ${stripCRLF(subject)}`,
-      options?.cc ? `Cc: ${stripCRLF(options.cc.join(", "))}` : "",
-      `MIME-Version: 1.0`,
-      `Content-Type: text/${options?.html ? "html" : "plain"}; charset=utf-8`,
-      "", body,
-    ].filter(Boolean).join("\r\n");
+    const raw = buildRawMimeMessage({
+      from: this.email,
+      to, subject, body,
+      cc: options?.cc, bcc: options?.bcc,
+      html: options?.html,
+      attachments: options?.attachments,
+    });
 
     const draftsFolder = await this.findSpecialFolder("\\Drafts");
     const lock = await this.imap.getMailboxLock(draftsFolder);
     try {
-      await this.imap.append(draftsFolder, Buffer.from(raw), ["\\Draft"]);
+      await this.imap.append(draftsFolder, raw, ["\\Draft"]);
       return `draft-${Date.now()}`;
     } finally {
       lock.release();
@@ -252,6 +252,15 @@ function extractPlainBody(source: string): string {
   }
   const idx = source.indexOf("\r\n\r\n");
   return idx >= 0 ? source.slice(idx + 4) : source;
+}
+
+function toNodemailerAttachments(atts: Attachment[] | undefined) {
+  if (!atts || atts.length === 0) return undefined;
+  return atts.map((a) => ({
+    filename: a.filename,
+    content: a.data,
+    contentType: a.mimeType,
+  }));
 }
 
 function extractImapAttachments(bodyStructure: any): AttachmentInfo[] {
