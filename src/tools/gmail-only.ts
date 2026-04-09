@@ -1,6 +1,8 @@
 import { registerTool } from "./registry.js";
 import { fenceEmailHeader, fenceEmailContent, stripFencing } from "../security/sanitize.js";
 import { checkSendLimit } from "./write.js";
+import { buildEmailBuffer, shouldUseMediaUpload, type GmailEncodeOptions } from "../providers/gmail.js";
+import { loadAttachments } from "../security/attachment-loader.js";
 
 function getGmailApi(provider: any) {
   if (provider.type !== "gmail" || !provider.gmailApi) {
@@ -256,6 +258,80 @@ registerTool(
   async (args, _ctx) => {
     return { content: [{ type: "text", text: `Contact search for "${args.query}": This feature requires the Google People API. Search your Gmail instead with: search_emails account="${args.account}" query="from:${args.query} OR to:${args.query}"` }] };
   }, "contacts"
+);
+
+// --- Drafts (update/delete) ---
+registerTool(
+  {
+    name: "update_draft",
+    description: "Replace the contents of an existing Gmail draft. The draft's thread association is preserved automatically.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        account: { type: "string", description: "Account alias" },
+        draft_id: { type: "string", description: "Draft ID returned by create_draft" },
+        to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" },
+        subject: { type: "string", description: "Email subject" },
+        body: { type: "string", description: "Email body" },
+        cc: { type: "array", items: { type: "string" }, description: "CC recipients" },
+        bcc: { type: "array", items: { type: "string" }, description: "BCC recipients" },
+        html: { type: "boolean", description: "Send as HTML (default false)" },
+        attachments: {
+          type: "array", items: { type: "string" },
+          description: "Optional list of local file paths to attach. Each must be a regular file under 25 MB.",
+        },
+      },
+      required: ["account", "draft_id", "to", "subject", "body"],
+    },
+  },
+  async (args, ctx) => {
+    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
+    const existing = await gmail.users.drafts.get({ userId: "me", id: args.draft_id as string, format: "metadata" });
+    const threadId = existing.data.message?.threadId ?? undefined;
+    const attachments = loadAttachments(args.attachments as string[] | undefined);
+    const encodeOpts: GmailEncodeOptions = {
+      cc: args.cc as string[] | undefined,
+      bcc: args.bcc as string[] | undefined,
+      html: args.html as boolean | undefined,
+      attachments,
+    };
+    const rawBuffer = buildEmailBuffer(args.to as string[], args.subject as string, args.body as string, encodeOpts);
+    if (shouldUseMediaUpload(rawBuffer, encodeOpts)) {
+      await gmail.users.drafts.update({
+        userId: "me",
+        id: args.draft_id as string,
+        requestBody: { message: { threadId } },
+        media: { mimeType: "message/rfc822", body: rawBuffer },
+      });
+    } else {
+      await gmail.users.drafts.update({
+        userId: "me",
+        id: args.draft_id as string,
+        requestBody: { message: { raw: rawBuffer.toString("base64url"), threadId } },
+      });
+    }
+    return { content: [{ type: "text", text: `Draft ${args.draft_id} updated.` }] };
+  }
+);
+
+registerTool(
+  {
+    name: "delete_draft",
+    description: "Permanently delete a Gmail draft. This cannot be undone.",
+    inputSchema: {
+      type: "object" as const,
+      properties: {
+        account: { type: "string", description: "Account alias" },
+        draft_id: { type: "string", description: "Draft ID to delete" },
+      },
+      required: ["account", "draft_id"],
+    },
+  },
+  async (args, ctx) => {
+    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
+    await gmail.users.drafts.delete({ userId: "me", id: args.draft_id as string });
+    return { content: [{ type: "text", text: `Draft ${args.draft_id} deleted.` }] };
+  }
 );
 
 // --- Send As ---

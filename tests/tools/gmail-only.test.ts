@@ -7,6 +7,11 @@ function createMockGmailProvider() {
   const mockGmailApi = {
     users: {
       messages: { get: vi.fn() },
+      drafts: {
+        get: vi.fn().mockResolvedValue({ data: { message: { threadId: "thread-1" } } }),
+        update: vi.fn().mockResolvedValue({ data: { id: "draft-1" } }),
+        delete: vi.fn().mockResolvedValue({}),
+      },
       settings: {
         filters: {
           list: vi.fn().mockResolvedValue({ data: { filter: [] } }),
@@ -43,6 +48,35 @@ describe("gmail-only tools", () => {
   it("list_filters returns filters", async () => {
     const result = await handleToolCall("list_filters", { account: "personal" }, ctx);
     expect(result.content[0].text).toContain("No filters");
+  });
+
+  it("update_draft rewrites an existing draft and preserves its thread", async () => {
+    const result = await handleToolCall(
+      "update_draft",
+      { account: "personal", draft_id: "draft-1", to: ["a@b.com"], subject: "New subject", body: "New body" },
+      ctx,
+    );
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("draft-1");
+    expect(mockProvider.gmailApi.users.drafts.get).toHaveBeenCalledWith(
+      expect.objectContaining({ userId: "me", id: "draft-1" }),
+    );
+    const updateCall = mockProvider.gmailApi.users.drafts.update.mock.calls[0][0];
+    expect(updateCall.userId).toBe("me");
+    expect(updateCall.id).toBe("draft-1");
+    expect(updateCall.requestBody.message.threadId).toBe("thread-1");
+    expect(typeof updateCall.requestBody.message.raw).toBe("string");
+  });
+
+  it("delete_draft removes the draft", async () => {
+    const result = await handleToolCall(
+      "delete_draft",
+      { account: "personal", draft_id: "draft-1" },
+      ctx,
+    );
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("deleted");
+    expect(mockProvider.gmailApi.users.drafts.delete).toHaveBeenCalledWith({ userId: "me", id: "draft-1" });
   });
 
   it("create_filter creates a filter", async () => {

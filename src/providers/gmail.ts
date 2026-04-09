@@ -98,9 +98,9 @@ function toSummary(msg: EmailMessage): EmailSummary {
   };
 }
 
-type GmailEncodeOptions = SendOptions & { inReplyTo?: string; references?: string };
+export type GmailEncodeOptions = SendOptions & { inReplyTo?: string; references?: string };
 
-function buildEmailBuffer(to: string[], subject: string, body: string, options?: GmailEncodeOptions): Buffer {
+export function buildEmailBuffer(to: string[], subject: string, body: string, options?: GmailEncodeOptions): Buffer {
   return buildRawMimeMessage({
     to, subject, body,
     cc: options?.cc, bcc: options?.bcc,
@@ -120,7 +120,7 @@ function buildEmailBuffer(to: string[], subject: string, body: string, options?:
  * raw payload is large enough to risk the JSON limit.
  */
 const MEDIA_UPLOAD_THRESHOLD = 3 * 1024 * 1024;
-function shouldUseMediaUpload(raw: Buffer, options?: GmailEncodeOptions): boolean {
+export function shouldUseMediaUpload(raw: Buffer, options?: GmailEncodeOptions): boolean {
   if (options?.attachments && options.attachments.length > 0) return true;
   return raw.length > MEDIA_UPLOAD_THRESHOLD;
 }
