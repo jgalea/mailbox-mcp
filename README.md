@@ -102,6 +102,7 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 |------|-------------|
 | `list_accounts` | List configured accounts |
 | `authenticate` | Add a new account |
+| `reauth` | Re-run OAuth for an existing Gmail account (use when refresh token expires with `invalid_grant`) |
 | `remove_account` | Remove an account |
 | `search_emails` | Search messages |
 | `read_email` | Read a message |

@@ -45,4 +45,24 @@ describe("account tools", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("not found");
   });
+
+  it("reauth errors on non-existent account", async () => {
+    const result = await handleToolCall("reauth", { alias: "nope" }, ctx);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("not found");
+  });
+
+  it("reauth rejects non-Gmail accounts", async () => {
+    ctx.accountManager.addAccount("work", {
+      provider: "imap",
+      email: "me@work.com",
+      host: "imap.work.com",
+      port: 993,
+      smtpHost: "smtp.work.com",
+      smtpPort: 587,
+    });
+    const result = await handleToolCall("reauth", { alias: "work" }, ctx);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("Gmail-only");
+  });
 });

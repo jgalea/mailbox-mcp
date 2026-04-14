@@ -120,6 +120,33 @@ registerTool(
 
 registerTool(
   {
+    name: "reauth",
+    description: "Re-run OAuth for an existing Gmail account without removing it. Use when the refresh token expires (invalid_grant) or scopes change.",
+    inputSchema: {
+      type: "object" as const,
+      properties: { alias: { type: "string", description: "Account alias to re-authenticate" } },
+      required: ["alias"],
+    },
+  },
+  async (args, ctx) => {
+    const alias = args.alias as string;
+    const account = ctx.accountManager.getAccount(alias);
+    if (account.provider !== "gmail") {
+      return {
+        content: [{ type: "text", text: `reauth is Gmail-only. Account "${alias}" is ${account.provider}; re-run authenticate to rotate its credentials.` }],
+        isError: true,
+      };
+    }
+    const { authenticateGmail } = await import("../auth/gmail-oauth.js");
+    const configDir = ctx.accountManager.getAccountDir(alias).replace(/\/accounts\/.*/, "");
+    await authenticateGmail(configDir, alias);
+    ctx.clearProviderCache?.(alias);
+    return { content: [{ type: "text", text: `Gmail account "${alias}" (${account.email}) re-authenticated successfully.` }] };
+  }
+);
+
+registerTool(
+  {
     name: "remove_account",
     description: "Remove a configured email account and its stored credentials",
     inputSchema: {
