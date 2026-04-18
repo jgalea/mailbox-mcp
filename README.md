@@ -8,7 +8,7 @@ mailbox-mcp is an [MCP server](https://modelcontextprotocol.io) that connects yo
 
 - **Multiple accounts, one server.** Work email, personal email, client accounts — all accessible through a single server. No need to run separate instances.
 - **Not just Gmail.** Supports Gmail (full API), any IMAP/SMTP provider (ProtonMail, corporate mail, self-hosted), and JMAP (Fastmail, Stalwart, Topicbox). Add providers without changing a line of tool code.
-- **Actually secured.** 6 rounds of security auditing. Encrypted credentials (AES-256-GCM), prompt injection fencing on every email field, rate limiting, TLS enforcement, SSRF protection with IP encoding evasion detection, input validation. Most MCP servers skip security entirely.
+- **Security-conscious.** Encrypted credentials (AES-256-GCM), prompt injection fencing on email content, rate limiting, TLS enforcement, SSRF protection with IP encoding evasion detection, input validation.
 - **36 tools.** Search, read, send, reply, forward, drafts, labels, filters, templates, signatures, vacation replies, attachments, unsubscribe, and more.
 - **Zero native dependencies.** Pure Node.js. Install and run anywhere.
 
