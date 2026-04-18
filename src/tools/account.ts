@@ -121,7 +121,7 @@ registerTool(
 registerTool(
   {
     name: "reauth",
-    description: "Re-run OAuth for an existing Gmail account without removing it. Use when the refresh token expires (invalid_grant) or scopes change.",
+    description: "Re-run OAuth for an existing Gmail account without removing it. Opens a browser for Google sign-in. Use when the refresh token expires (invalid_grant) or scopes change.",
     inputSchema: {
       type: "object" as const,
       properties: { alias: { type: "string", description: "Account alias to re-authenticate" } },

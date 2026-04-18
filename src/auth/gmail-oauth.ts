@@ -1,6 +1,8 @@
 import { createServer } from "node:http";
 import { URL } from "node:url";
 import { randomBytes } from "node:crypto";
+import { spawn } from "node:child_process";
+import { platform } from "node:os";
 import { OAuth2Client } from "google-auth-library";
 import { readFileSync, existsSync } from "node:fs";
 import { join } from "node:path";
@@ -15,6 +17,21 @@ const SCOPES = [
 
 const REDIRECT_PORT = 4895;
 const REDIRECT_URI = `http://localhost:${REDIRECT_PORT}/oauth2callback`;
+const OAUTH_TIMEOUT_MS = 5 * 60 * 1000;
+
+function openInBrowser(url: string): void {
+  const opener =
+    platform() === "darwin" ? { cmd: "open", args: [url] }
+    : platform() === "win32" ? { cmd: "cmd", args: ["/c", "start", "", url] }
+    : { cmd: "xdg-open", args: [url] };
+  try {
+    const child = spawn(opener.cmd, opener.args, { detached: true, stdio: "ignore" });
+    child.on("error", () => {});
+    child.unref();
+  } catch {
+    // Fall through — URL is still logged to stderr below.
+  }
+}
 
 interface OAuthKeys {
   installed?: { client_id: string; client_secret: string };
@@ -60,6 +77,15 @@ export async function authenticateGmail(
   };
 
   const code = await new Promise<string>((resolve, reject) => {
+    let settled = false;
+    const finish = (fn: () => void) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      server.close();
+      fn();
+    };
+
     const server = createServer((req, res) => {
       const url = new URL(req.url ?? "/", `http://localhost:${REDIRECT_PORT}`);
       if (url.pathname !== "/oauth2callback") {
@@ -72,8 +98,7 @@ export async function authenticateGmail(
       if (returnedState !== state) {
         res.writeHead(403, securityHeaders);
         res.end("<h1>Authentication failed</h1><p>State mismatch — possible CSRF attack. You can close this tab.</p>");
-        server.close();
-        reject(new Error("OAuth state mismatch: possible CSRF attack"));
+        finish(() => reject(new Error("OAuth state mismatch: possible CSRF attack")));
         return;
       }
 
@@ -83,30 +108,32 @@ export async function authenticateGmail(
       if (error) {
         res.writeHead(200, securityHeaders);
         res.end("<h1>Authentication failed</h1><p>You can close this tab.</p>");
-        server.close();
-        reject(new Error(`OAuth error: ${error}`));
+        finish(() => reject(new Error(`OAuth error: ${error}`)));
         return;
       }
 
       if (!authCode) {
         res.writeHead(400, securityHeaders);
         res.end("<h1>Missing authorization code</h1>");
-        server.close();
-        reject(new Error("No authorization code received"));
+        finish(() => reject(new Error("No authorization code received")));
         return;
       }
 
       res.writeHead(200, securityHeaders);
       res.end("<h1>Authentication successful</h1><p>You can close this tab.</p>");
-      server.close();
-      resolve(authCode);
+      finish(() => resolve(authCode));
     });
+
+    const timeout = setTimeout(() => {
+      finish(() => reject(new Error(`OAuth callback not received within ${OAUTH_TIMEOUT_MS / 1000}s — aborting.`)));
+    }, OAUTH_TIMEOUT_MS);
 
     server.listen(REDIRECT_PORT, "127.0.0.1", () => {
-      console.error(`\nOpen this URL to authenticate:\n\n${authUrl}\n`);
+      console.error(`\nOpening browser to authenticate. If it doesn't open, visit:\n\n${authUrl}\n`);
+      openInBrowser(authUrl);
     });
 
-    server.on("error", reject);
+    server.on("error", (err) => finish(() => reject(err)));
   });
 
   const { tokens } = await oauth2Client.getToken(code);
