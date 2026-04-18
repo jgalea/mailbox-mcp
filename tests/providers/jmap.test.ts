@@ -95,7 +95,7 @@ describe("JmapProvider", () => {
     expect(sessionCalls).toHaveLength(1);
   });
 
-  it("readMessage returns full email with fenced content", async () => {
+  it("readMessage returns full raw email (fencing applied at MCP exit)", async () => {
     mockFetch
       .mockResolvedValueOnce(mockSessionResponse())
       .mockResolvedValueOnce(mockApiResponse([
@@ -119,9 +119,8 @@ describe("JmapProvider", () => {
 
     const msg = await provider.readMessage("m1");
     expect(msg.id).toBe("m1");
-    expect(msg.body).toContain("Hello there");
-    expect(msg.body).toContain("[UNTRUSTED_EMAIL_CONTENT]");
-    expect(msg.subject).toContain("[UNTRUSTED_SUBJECT]");
+    expect(msg.body).toBe("Hello there");
+    expect(msg.subject).toBe("Important");
     expect(msg.attachments).toHaveLength(1);
     expect(msg.attachments[0].filename).toBe("doc.pdf");
   });

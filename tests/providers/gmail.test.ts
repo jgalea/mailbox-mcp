@@ -68,7 +68,7 @@ describe("GmailProvider", () => {
     expect(results[0].subject).toBe("Test email");
   });
 
-  it("readMessage returns fenced EmailMessage", async () => {
+  it("readMessage returns raw EmailMessage (fencing applied at MCP exit)", async () => {
     mockGmail.users.messages.get.mockResolvedValue({
       data: {
         id: "msg-1", threadId: "thread-1", labelIds: ["INBOX"], snippet: "Hello",
@@ -88,8 +88,8 @@ describe("GmailProvider", () => {
     });
 
     const msg = await provider.readMessage("msg-1");
-    expect(msg.body).toContain("[UNTRUSTED_EMAIL_CONTENT]");
-    expect(msg.body).toContain("Hello world");
+    expect(msg.body).toBe("Hello world");
+    expect(msg.subject).toBe("Test");
   });
 
   it("trashMessages processes sequentially", async () => {
@@ -118,11 +118,15 @@ describe("GmailProvider", () => {
       const call = mockGmail.users.messages.send.mock.calls[0][0];
       expect(call.media).toBeDefined();
       expect(call.media.mimeType).toBe("message/rfc822");
-      expect(Buffer.isBuffer(call.media.body)).toBe(true);
+      // media.body must be a Readable stream (googleapis requirement for media uploads)
+      expect(typeof call.media.body.pipe).toBe("function");
       expect(call.requestBody.raw).toBeUndefined();
       // Raw body should contain the attachment filename in a Content-Disposition header
-      expect(call.media.body.toString()).toContain("report.pdf");
-      expect(call.media.body.toString()).toContain("multipart/mixed");
+      const bodyChunks: Buffer[] = [];
+      for await (const chunk of call.media.body as AsyncIterable<Buffer>) bodyChunks.push(chunk);
+      const bodyStr = Buffer.concat(bodyChunks).toString();
+      expect(bodyStr).toContain("report.pdf");
+      expect(bodyStr).toContain("multipart/mixed");
     });
 
     it("sendMessage still uses raw base64 path for small plain emails", async () => {

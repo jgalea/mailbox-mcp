@@ -1,5 +1,4 @@
 // src/providers/jmap.ts
-import { fenceEmailContent } from "../security/sanitize.js";
 import { stripCRLF, validateNoSSRF } from "../security/validation.js";
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
@@ -153,10 +152,10 @@ export class JmapProvider implements MailProvider {
   }
 
   async readMessage(messageId: string): Promise<EmailMessage> {
-    return this.fetchMessage(messageId, true);
+    return this.fetchMessage(messageId);
   }
 
-  private async fetchMessage(messageId: string, fence: boolean): Promise<EmailMessage> {
+  private async fetchMessage(messageId: string): Promise<EmailMessage> {
     const session = await this.ensureSession();
     const responses = await this.apiCall([
       ["Email/get", {
@@ -187,12 +186,12 @@ export class JmapProvider implements MailProvider {
       cc: formatJmapAddresses(e.cc),
       bcc: formatJmapAddresses(e.bcc),
       replyTo: formatJmapAddress(e.replyTo?.[0]) || undefined,
-      subject: fence ? fenceEmailContent(subject, "subject") : subject,
+      subject,
       snippet: e.preview ?? "",
       date: e.receivedAt ?? "",
       labels: Object.keys(e.mailboxIds ?? {}),
       hasAttachments: e.hasAttachment ?? false,
-      body: fence ? fenceEmailContent(bodyText) : bodyText,
+      body: bodyText,
       attachments: (e.attachments ?? []).map((a: any) => ({
         id: a.blobId,
         filename: a.name ?? "attachment",
@@ -236,12 +235,12 @@ export class JmapProvider implements MailProvider {
         cc: formatJmapAddresses(e.cc),
         bcc: formatJmapAddresses(e.bcc),
         replyTo: formatJmapAddress(e.replyTo?.[0]) || undefined,
-        subject: fenceEmailContent(e.subject ?? "", "subject"),
+        subject: e.subject ?? "",
         snippet: e.preview ?? "",
         date: e.receivedAt ?? "",
         labels: Object.keys(e.mailboxIds ?? {}),
         hasAttachments: e.hasAttachment ?? false,
-        body: fenceEmailContent(bodyText),
+        body: bodyText,
         attachments: (e.attachments ?? []).map((a: any) => ({
           id: a.blobId,
           filename: a.name ?? "attachment",
@@ -398,7 +397,7 @@ export class JmapProvider implements MailProvider {
   }
 
   async replyToMessage(messageId: string, body: string, options?: ReplyOptions): Promise<string> {
-    const original = await this.fetchMessage(messageId, false);
+    const original = await this.fetchMessage(messageId);
     const replyAddress = original.replyTo || original.from;
     const to = [replyAddress];
     if (options?.replyAll) { to.push(...original.to, ...original.cc); }
@@ -407,7 +406,7 @@ export class JmapProvider implements MailProvider {
   }
 
   async forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string> {
-    const original = await this.fetchMessage(messageId, false);
+    const original = await this.fetchMessage(messageId);
     const fwdBody = options?.message
       ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
       : `---------- Forwarded message ----------\n${original.body}`;
@@ -506,7 +505,7 @@ export class JmapProvider implements MailProvider {
 
   async downloadAttachment(messageId: string, attachmentId: string): Promise<{ filename: string; data: Buffer; mimeType: string }> {
     const session = await this.ensureSession();
-    const msg = await this.fetchMessage(messageId, false);
+    const msg = await this.fetchMessage(messageId);
     const attachment = msg.attachments.find(a => a.id === attachmentId);
     if (!attachment) throw new Error(`Attachment ${attachmentId} not found`);
     const url = session.downloadUrl

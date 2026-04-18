@@ -50,7 +50,10 @@ async function getProvider(alias: string): Promise<MailProvider> {
     const { decryptCredentials } = await import("./auth/imap-auth.js");
 
     const configDir = accountManager.getAccountDir(alias).replace(/\/accounts\/.*/, "");
-    const passphrase = process.env.MAILBOX_MCP_PASSPHRASE ?? "";
+    const passphrase = process.env.MAILBOX_MCP_PASSPHRASE;
+    if (!passphrase) {
+      throw new Error(`IMAP account "${alias}" requires MAILBOX_MCP_PASSPHRASE to decrypt credentials. Set it in your MCP server environment.`);
+    }
     const creds = decryptCredentials(configDir, alias, passphrase);
 
     const imap = new ImapFlow({
@@ -81,7 +84,10 @@ async function getProvider(alias: string): Promise<MailProvider> {
   if (config.provider === "jmap") {
     const { decryptJmapCredentials } = await import("./auth/jmap-auth.js");
     const configDir = accountManager.getAccountDir(alias).replace(/\/accounts\/.*/, "");
-    const passphrase = process.env.MAILBOX_MCP_PASSPHRASE ?? "";
+    const passphrase = process.env.MAILBOX_MCP_PASSPHRASE;
+    if (!passphrase) {
+      throw new Error(`JMAP account "${alias}" requires MAILBOX_MCP_PASSPHRASE to decrypt credentials. Set it in your MCP server environment.`);
+    }
     const creds = decryptJmapCredentials(configDir, alias, passphrase);
 
     const { JmapProvider } = await import("./providers/jmap.js");

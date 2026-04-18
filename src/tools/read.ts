@@ -43,9 +43,9 @@ registerTool(
     const text = [
       `**From:** ${fenceEmailHeader(msg.from, "from")}`, `**To:** ${fenceEmailHeader(msg.to.join(", "), "to")}`,
       msg.cc.length ? `**Cc:** ${fenceEmailHeader(msg.cc.join(", "), "cc")}` : "",
-      `**Subject:** ${msg.subject}`, `**Date:** ${msg.date}`,
+      `**Subject:** ${fenceEmailContent(msg.subject, "subject")}`, `**Date:** ${msg.date}`,
       msg.attachments.length ? `**Attachments:** ${msg.attachments.map((a) => `${fenceEmailHeader(a.filename, "filename")} (${a.id})`).join(", ")}` : "",
-      "", msg.body,
+      "", fenceEmailContent(msg.body),
     ].filter(Boolean).join("\n");
     return { content: [{ type: "text", text }] };
   }
@@ -68,8 +68,8 @@ registerTool(
     const provider = await ctx.getProvider(args.account as string);
     const thread = await provider.readThread(args.thread_id as string);
     const text = [
-      `**Thread:** ${thread.id} — ${thread.subject}`, `**Messages:** ${thread.messages.length}`, "",
-      ...thread.messages.map((m, i) => `--- Message ${i + 1} ---\n**From:** ${fenceEmailHeader(m.from, "from")}\n**Date:** ${m.date}\n\n${m.body}`),
+      `**Thread:** ${thread.id} — ${fenceEmailContent(thread.subject, "subject")}`, `**Messages:** ${thread.messages.length}`, "",
+      ...thread.messages.map((m, i) => `--- Message ${i + 1} ---\n**From:** ${fenceEmailHeader(m.from, "from")}\n**Date:** ${m.date}\n\n${fenceEmailContent(m.body)}`),
     ].join("\n");
     return { content: [{ type: "text", text }] };
   }

@@ -1,4 +1,4 @@
-import { fenceEmailContent } from "../security/sanitize.js";
+import { Readable } from "node:stream";
 import { buildRawMimeMessage } from "./mime.js";
 
 // Lightweight types matching the gmail_v1 shapes we use, to avoid importing
@@ -67,7 +67,7 @@ function extractAttachments(payload: GmailMessagePart): AttachmentInfo[] {
   return attachments;
 }
 
-function parseMessage(data: GmailMessage, fence: boolean = false): EmailMessage {
+function parseMessage(data: GmailMessage): EmailMessage {
   const headers = data.payload?.headers ?? [];
   const body = decodeBody(data.payload!);
   const attachments = extractAttachments(data.payload!);
@@ -80,12 +80,12 @@ function parseMessage(data: GmailMessage, fence: boolean = false): EmailMessage 
     cc: getHeader(headers, "Cc").split(",").map((s) => s.trim()).filter(Boolean),
     bcc: getHeader(headers, "Bcc").split(",").map((s) => s.trim()).filter(Boolean),
     replyTo: getHeader(headers, "Reply-To") || undefined,
-    subject: fence ? fenceEmailContent(getHeader(headers, "Subject"), "subject") : getHeader(headers, "Subject"),
+    subject: getHeader(headers, "Subject"),
     snippet: data.snippet ?? "",
     date: getHeader(headers, "Date"),
     labels: data.labelIds ?? [],
     hasAttachments: attachments.length > 0,
-    body: fence ? fenceEmailContent(body) : body,
+    body,
     attachments,
   };
 }
@@ -150,18 +150,17 @@ export class GmailProvider implements MailProvider {
   }
 
   async readMessage(messageId: string): Promise<EmailMessage> {
-    return this.fetchMessage(messageId, true);
+    return this.fetchMessage(messageId);
   }
 
-  /** Fetch message without prompt-injection fencing, for use in forward/reply outgoing content. */
-  private async fetchMessage(messageId: string, fence: boolean): Promise<EmailMessage> {
+  private async fetchMessage(messageId: string): Promise<EmailMessage> {
     const res = await this.gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
-    return parseMessage(res.data, fence);
+    return parseMessage(res.data);
   }
 
   async readThread(threadId: string): Promise<EmailThread> {
     const res = await this.gmail.users.threads.get({ userId: "me", id: threadId, format: "full" });
-    const messages = (res.data.messages ?? []).map((m: GmailMessage) => parseMessage(m, true));
+    const messages = (res.data.messages ?? []).map((m: GmailMessage) => parseMessage(m));
     return { id: threadId, subject: messages[0]?.subject ?? "", messages };
   }
 
@@ -171,7 +170,7 @@ export class GmailProvider implements MailProvider {
       const res = await this.gmail.users.messages.send({
         userId: "me",
         requestBody: {},
-        media: { mimeType: "message/rfc822", body: rawBuffer },
+        media: { mimeType: "message/rfc822", body: Readable.from(rawBuffer) },
       });
       return res.data.id!;
     }
@@ -213,7 +212,7 @@ export class GmailProvider implements MailProvider {
       const res = await this.gmail.users.messages.send({
         userId: "me",
         requestBody: { threadId },
-        media: { mimeType: "message/rfc822", body: rawBuffer },
+        media: { mimeType: "message/rfc822", body: Readable.from(rawBuffer) },
       });
       return res.data.id!;
     }
@@ -225,7 +224,7 @@ export class GmailProvider implements MailProvider {
   }
 
   async forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string> {
-    const original = await this.fetchMessage(messageId, false);
+    const original = await this.fetchMessage(messageId);
     const fwdBody = options?.message
       ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
       : `---------- Forwarded message ----------\n${original.body}`;
@@ -258,7 +257,7 @@ export class GmailProvider implements MailProvider {
       const res = await this.gmail.users.drafts.create({
         userId: "me",
         requestBody: { message: { threadId } },
-        media: { mimeType: "message/rfc822", body: rawBuffer },
+        media: { mimeType: "message/rfc822", body: Readable.from(rawBuffer) },
       });
       return res.data.id!;
     }

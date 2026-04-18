@@ -1,6 +1,5 @@
 import type { ImapFlow } from "imapflow";
 import type { Transporter } from "nodemailer";
-import { fenceEmailContent } from "../security/sanitize.js";
 import { stripCRLF } from "../security/validation.js";
 import { buildRawMimeMessage } from "./mime.js";
 import type {
@@ -74,11 +73,10 @@ export class ImapProvider implements MailProvider {
   }
 
   async readMessage(messageId: string): Promise<EmailMessage> {
-    return this.fetchMessage(messageId, true);
+    return this.fetchMessage(messageId);
   }
 
-  /** Fetch message with optional fencing. Unfenced variant used for forward/reply outgoing content. */
-  private async fetchMessage(messageId: string, fence: boolean): Promise<EmailMessage> {
+  private async fetchMessage(messageId: string): Promise<EmailMessage> {
     const lock = await this.imap.getMailboxLock("INBOX");
     try {
       const fetchResult = await this.imap.fetchOne(parseInt(messageId), {
@@ -98,12 +96,12 @@ export class ImapProvider implements MailProvider {
         cc: formatAddresses(msg.envelope?.cc),
         bcc: [],
         replyTo: formatAddress(msg.envelope?.replyTo?.[0]) || undefined,
-        subject: fence ? fenceEmailContent(subject, "subject") : subject,
+        subject,
         snippet: plainBody.slice(0, 100),
         date: msg.envelope?.date?.toISOString() ?? "",
         labels: [],
         hasAttachments: (msg.bodyStructure?.childNodes?.length ?? 0) > 0,
-        body: fence ? fenceEmailContent(plainBody) : plainBody,
+        body: plainBody,
         attachments: extractImapAttachments(msg.bodyStructure),
       };
     } finally {
@@ -130,7 +128,7 @@ export class ImapProvider implements MailProvider {
   }
 
   async replyToMessage(messageId: string, body: string, options?: ReplyOptions): Promise<string> {
-    const original = await this.fetchMessage(messageId, false);
+    const original = await this.fetchMessage(messageId);
     const replyAddress = original.replyTo || original.from;
     const to = [replyAddress];
     if (options?.replyAll) { to.push(...original.to, ...original.cc); }
@@ -139,7 +137,7 @@ export class ImapProvider implements MailProvider {
   }
 
   async forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string> {
-    const original = await this.fetchMessage(messageId, false);
+    const original = await this.fetchMessage(messageId);
     const fwdBody = options?.message
       ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
       : `---------- Forwarded message ----------\n${original.body}`;
