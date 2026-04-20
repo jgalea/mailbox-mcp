@@ -11,16 +11,14 @@ describe("MailProvider interface", () => {
     const caps: ProviderCapabilities = {
       threads: true,
       filters: true,
-      snooze: true,
       templates: true,
       signatures: true,
       vacation: true,
-      contacts: true,
       unsubscribe: true,
       attachments: true,
       inboxSummary: true,
     };
-    expect(Object.keys(caps)).toHaveLength(10);
+    expect(Object.keys(caps)).toHaveLength(8);
   });
 
   it("EmailSummary has required fields", () => {

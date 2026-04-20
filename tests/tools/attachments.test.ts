@@ -10,7 +10,7 @@ describe("attachment tools", () => {
   beforeEach(() => {
     mockProvider = {
       type: "gmail",
-      capabilities: { threads: true, filters: true, snooze: true, templates: true, signatures: true, vacation: true, contacts: true, unsubscribe: true, attachments: true, inboxSummary: true },
+      capabilities: { threads: true, filters: true, templates: true, signatures: true, vacation: true, unsubscribe: true, attachments: true, inboxSummary: true },
       downloadAttachment: vi.fn().mockResolvedValue({ filename: "invoice.pdf", data: Buffer.from("fake-pdf"), mimeType: "application/pdf" }),
     } as unknown as MailProvider;
     ctx = { accountManager: { listAccounts: vi.fn(), getAccount: vi.fn() } as any, getProvider: vi.fn().mockReturnValue(mockProvider) };

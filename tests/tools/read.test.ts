@@ -6,7 +6,7 @@ import "../../src/tools/read.js";
 function createMockProvider(): MailProvider {
   return {
     type: "gmail",
-    capabilities: { threads: true, filters: true, snooze: true, templates: true, signatures: true, vacation: true, contacts: true, unsubscribe: true, attachments: true, inboxSummary: true },
+    capabilities: { threads: true, filters: true, templates: true, signatures: true, vacation: true, unsubscribe: true, attachments: true, inboxSummary: true },
     searchMessages: vi.fn().mockResolvedValue([{ id: "msg-1", from: "sender@test.com", to: ["me@test.com"], subject: "Test", snippet: "Hello", date: "2026-03-27", labels: ["INBOX"], hasAttachments: false }]),
     readMessage: vi.fn().mockResolvedValue({ id: "msg-1", from: "sender@test.com", to: ["me@test.com"], subject: "Test", snippet: "Hello", date: "2026-03-27", labels: ["INBOX"], hasAttachments: false, body: "Hello world", cc: [], bcc: [], attachments: [] }),
     readThread: vi.fn().mockResolvedValue({ id: "thread-1", subject: "Test", messages: [{ id: "msg-1", from: "sender@test.com", to: ["me@test.com"], subject: "Test", snippet: "Hello", date: "2026-03-27", labels: [], hasAttachments: false, body: "Thread body content", cc: [], bcc: [], attachments: [] }] }),

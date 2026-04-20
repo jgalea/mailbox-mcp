@@ -12,7 +12,6 @@ const SCOPES = [
   "https://www.googleapis.com/auth/gmail.modify",      // Read, send, trash, labels, filters
   "https://www.googleapis.com/auth/gmail.compose",      // Create drafts, send messages
   "https://www.googleapis.com/auth/gmail.settings.basic", // Signatures, vacation, send-as, filters
-  "https://www.googleapis.com/auth/contacts.readonly",  // Contact search (search_contacts tool)
 ];
 
 const REDIRECT_PORT = 4895;

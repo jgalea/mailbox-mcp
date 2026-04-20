@@ -26,7 +26,7 @@ function createMockGmailProvider() {
   };
   return {
     type: "gmail",
-    capabilities: { threads: true, filters: true, snooze: true, templates: true, signatures: true, vacation: true, contacts: true, unsubscribe: true, attachments: true, inboxSummary: true },
+    capabilities: { threads: true, filters: true, templates: true, signatures: true, vacation: true, unsubscribe: true, attachments: true, inboxSummary: true },
     gmailApi: mockGmailApi,
     searchMessages: vi.fn().mockResolvedValue([]),
     modifyLabels: vi.fn().mockResolvedValue(undefined),
@@ -185,7 +185,7 @@ describe("gmail-only tools", () => {
   it("capability gating blocks IMAP accounts", async () => {
     const imapProvider = {
       type: "imap",
-      capabilities: { threads: false, filters: false, snooze: false, templates: false, signatures: false, vacation: false, contacts: false, unsubscribe: false, attachments: true, inboxSummary: true },
+      capabilities: { threads: false, filters: false, templates: false, signatures: false, vacation: false, unsubscribe: false, attachments: true, inboxSummary: true },
     } as unknown as MailProvider;
     ctx.getProvider = vi.fn().mockReturnValue(imapProvider);
     const result = await handleToolCall("list_filters", { account: "work" }, ctx);

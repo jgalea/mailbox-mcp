@@ -75,11 +75,9 @@ export interface DraftOptions {
 export interface ProviderCapabilities {
   threads: boolean;
   filters: boolean;
-  snooze: boolean;
   templates: boolean;
   signatures: boolean;
   vacation: boolean;
-  contacts: boolean;
   unsubscribe: boolean;
   attachments: boolean;
   inboxSummary: boolean;

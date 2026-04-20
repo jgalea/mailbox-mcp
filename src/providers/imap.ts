@@ -2,6 +2,7 @@ import type { ImapFlow } from "imapflow";
 import type { Transporter } from "nodemailer";
 import { stripCRLF } from "../security/validation.js";
 import { buildRawMimeMessage } from "./mime.js";
+import { ensureReplyPrefix, ensureForwardPrefix } from "./headers.js";
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
   EmailThread, Label, SendOptions, ReplyOptions, ForwardOptions,
@@ -17,11 +18,103 @@ function formatAddresses(addrs: Array<{ address?: string; name?: string }> | und
   return (addrs ?? []).map(formatAddress).filter(Boolean);
 }
 
+/**
+ * IMAP message IDs are scoped to a folder. We encode them as `folder:uid` so
+ * downstream tools can move/read messages from the right mailbox. Bare UIDs
+ * are accepted for backwards compatibility and assumed to live in INBOX.
+ */
+interface ImapMessageId {
+  folder: string;
+  uid: number;
+}
+
+function parseImapMessageId(raw: string): ImapMessageId {
+  const idx = raw.lastIndexOf(":");
+  if (idx > 0) {
+    const folder = raw.slice(0, idx);
+    const uid = parseInt(raw.slice(idx + 1), 10);
+    if (!Number.isNaN(uid)) return { folder, uid };
+  }
+  const uid = parseInt(raw, 10);
+  if (Number.isNaN(uid)) {
+    throw new Error(`Invalid IMAP message id: "${raw}"`);
+  }
+  return { folder: "INBOX", uid };
+}
+
+/** RFC 3501 system flags — case-insensitive. */
+const IMAP_SYSTEM_FLAGS = new Set(
+  ["\\Seen", "\\Answered", "\\Flagged", "\\Deleted", "\\Draft", "\\Recent"].map(f => f.toLowerCase())
+);
+
+function assertFlagName(name: string): string {
+  const normalized = name.startsWith("\\") ? name : `\\${name}`;
+  if (!IMAP_SYSTEM_FLAGS.has(normalized.toLowerCase())) {
+    throw new Error(
+      `IMAP accounts use flags, not labels. "${name}" is not a recognized IMAP flag. Valid flags: Seen, Answered, Flagged, Deleted, Draft.`
+    );
+  }
+  return normalized;
+}
+
+/** Locate a body-structure node by its IMAP part path. */
+function findBodyNode(bodyStructure: any, partPath: string): any | undefined {
+  if (!bodyStructure) return undefined;
+  if (bodyStructure.part === partPath) return bodyStructure;
+  for (const child of bodyStructure.childNodes ?? []) {
+    const hit = findBodyNode(child, partPath);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/**
+ * Walk a bodyStructure and return the part path of the most readable text part.
+ * Prefer text/plain, fall back to text/html, skip anything marked as attachment.
+ */
+function findReadableTextPart(bodyStructure: any): string | undefined {
+  if (!bodyStructure) return undefined;
+  const plain = findTextPart(bodyStructure, "text/plain");
+  if (plain) return plain;
+  return findTextPart(bodyStructure, "text/html");
+}
+
+function findTextPart(node: any, target: string): string | undefined {
+  if (!node) return undefined;
+  const mime = node.type && node.subtype ? `${node.type}/${node.subtype}`.toLowerCase() : "";
+  if (mime === target && node.disposition !== "attachment" && node.part) {
+    return node.part;
+  }
+  for (const child of node.childNodes ?? []) {
+    const hit = findTextPart(child, target);
+    if (hit) return hit;
+  }
+  return undefined;
+}
+
+/** Collect a readable stream into a UTF-8 string. */
+async function readStreamToString(stream: NodeJS.ReadableStream): Promise<string> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : (chunk as Buffer));
+  }
+  return Buffer.concat(chunks).toString("utf-8");
+}
+
+/** Collect a readable stream into a Buffer. */
+async function readStreamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer> {
+  const chunks: Buffer[] = [];
+  for await (const chunk of stream) {
+    chunks.push(typeof chunk === "string" ? Buffer.from(chunk) : (chunk as Buffer));
+  }
+  return Buffer.concat(chunks);
+}
+
 export class ImapProvider implements MailProvider {
   readonly type = "imap";
   readonly capabilities: ProviderCapabilities = {
-    threads: false, filters: false, snooze: false, templates: false,
-    signatures: false, vacation: false, contacts: false, unsubscribe: false,
+    threads: false, filters: false, templates: false,
+    signatures: false, vacation: false, unsubscribe: false,
     attachments: true, inboxSummary: true,
   };
 
@@ -46,19 +139,22 @@ export class ImapProvider implements MailProvider {
   }
 
   async searchMessages(query: string, maxResults: number = 20): Promise<EmailSummary[]> {
-    const lock = await this.imap.getMailboxLock("INBOX");
+    const folder = "INBOX";
+    const lock = await this.imap.getMailboxLock(folder);
     try {
-      const searchResult = await this.imap.search({ or: [{ subject: query }, { body: query }] });
-      const uids = searchResult || [];
-      const limited = uids.slice(-maxResults).reverse();
-      if (limited.length === 0) return [];
+      const trimmed = query.trim();
+      const isWildcard = trimmed === "" || trimmed === "*";
+      const uids = isWildcard
+        ? await this.listRecentUids(maxResults)
+        : await this.searchByText(trimmed, maxResults);
+      if (uids.length === 0) return [];
 
-      const messages = await this.imap.fetchAll(limited, {
+      const messages = await this.imap.fetchAll(uids, {
         envelope: true, flags: true, bodyStructure: true, uid: true,
       });
 
       return messages.map((msg: any) => ({
-        id: String(msg.uid),
+        id: `${folder}:${msg.uid}`,
         from: formatAddress(msg.envelope?.from?.[0]),
         to: formatAddresses(msg.envelope?.to),
         subject: msg.envelope?.subject ?? "",
@@ -72,37 +168,65 @@ export class ImapProvider implements MailProvider {
     }
   }
 
+  private async searchByText(query: string, maxResults: number): Promise<number[]> {
+    const searchResult = await this.imap.search({ or: [{ subject: query }, { body: query }] });
+    const uids = searchResult || [];
+    return uids.slice(-maxResults).reverse();
+  }
+
+  /** Fetch the N most recent UIDs from the currently locked mailbox. */
+  private async listRecentUids(maxResults: number): Promise<number[]> {
+    const status = (this.imap as any).mailbox;
+    const total = status?.exists ?? 0;
+    if (total === 0) return [];
+    const startSeq = Math.max(1, total - maxResults + 1);
+    const uids: number[] = [];
+    for await (const msg of this.imap.fetch(`${startSeq}:*`, { uid: true })) {
+      uids.push(msg.uid);
+    }
+    return uids.sort((a, b) => b - a);
+  }
+
   async readMessage(messageId: string): Promise<EmailMessage> {
     return this.fetchMessage(messageId);
   }
 
   private async fetchMessage(messageId: string): Promise<EmailMessage> {
-    const lock = await this.imap.getMailboxLock("INBOX");
+    const { folder, uid } = parseImapMessageId(messageId);
+    const lock = await this.imap.getMailboxLock(folder);
     try {
-      const fetchResult = await this.imap.fetchOne(parseInt(messageId), {
-        envelope: true, source: true, flags: true, bodyStructure: true, uid: true,
+      const meta = await this.imap.fetchOne(uid, {
+        envelope: true, flags: true, bodyStructure: true, uid: true,
       });
-      if (!fetchResult) throw new Error(`Message ${messageId} not found`);
-      const msg = fetchResult;
+      if (!meta) throw new Error(`Message ${messageId} not found`);
 
-      const body = msg.source?.toString("utf-8") ?? "";
-      const plainBody = extractPlainBody(body);
-      const subject = msg.envelope?.subject ?? "";
+      const textPart = findReadableTextPart(meta.bodyStructure);
+      let body = "";
+      if (textPart) {
+        // download() decodes transfer-encoding (base64/quoted-printable) and
+        // converts non-UTF-8 charsets to UTF-8 for text parts.
+        const dl = await this.imap.download(uid, textPart, { uid: true });
+        if (dl?.content) body = await readStreamToString(dl.content);
+      } else if (!meta.bodyStructure?.childNodes) {
+        // Single-part message with no explicit part path.
+        const dl = await this.imap.download(uid, "TEXT", { uid: true });
+        if (dl?.content) body = await readStreamToString(dl.content);
+      }
 
       return {
-        id: messageId,
-        from: formatAddress(msg.envelope?.from?.[0]),
-        to: formatAddresses(msg.envelope?.to),
-        cc: formatAddresses(msg.envelope?.cc),
+        id: `${folder}:${uid}`,
+        from: formatAddress(meta.envelope?.from?.[0]),
+        to: formatAddresses(meta.envelope?.to),
+        cc: formatAddresses(meta.envelope?.cc),
         bcc: [],
-        replyTo: formatAddress(msg.envelope?.replyTo?.[0]) || undefined,
-        subject,
-        snippet: plainBody.slice(0, 100),
-        date: msg.envelope?.date?.toISOString() ?? "",
+        replyTo: formatAddress(meta.envelope?.replyTo?.[0]) || undefined,
+        subject: meta.envelope?.subject ?? "",
+        snippet: body.slice(0, 100),
+        date: meta.envelope?.date?.toISOString() ?? "",
         labels: [],
-        hasAttachments: (msg.bodyStructure?.childNodes?.length ?? 0) > 0,
-        body: plainBody,
-        attachments: extractImapAttachments(msg.bodyStructure),
+        hasAttachments: (meta.bodyStructure?.childNodes?.length ?? 0) > 0,
+        body,
+        attachments: extractImapAttachments(meta.bodyStructure),
       };
     } finally {
       lock.release();
@@ -132,7 +256,7 @@ export class ImapProvider implements MailProvider {
     const replyAddress = original.replyTo || original.from;
     const to = [replyAddress];
     if (options?.replyAll) { to.push(...original.to, ...original.cc); }
-    const subject = original.subject.includes("Re:") ? original.subject : `Re: ${original.subject}`;
+    const subject = ensureReplyPrefix(original.subject);
     return this.sendMessage(to, subject, body, { html: options?.html, attachments: options?.attachments });
   }
 
@@ -141,7 +265,7 @@ export class ImapProvider implements MailProvider {
     const fwdBody = options?.message
       ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
       : `---------- Forwarded message ----------\n${original.body}`;
-    const subject = original.subject.includes("Fwd:") ? original.subject : `Fwd: ${original.subject}`;
+    const subject = ensureForwardPrefix(original.subject);
     return this.sendMessage(to, subject, fwdBody, { html: options?.html, attachments: options?.attachments });
   }
 
@@ -166,13 +290,23 @@ export class ImapProvider implements MailProvider {
 
   async trashMessages(messageIds: string[]): Promise<void> {
     const trashFolder = await this.findSpecialFolder("\\Trash");
-    const lock = await this.imap.getMailboxLock("INBOX");
-    try {
-      for (const id of messageIds) {
-        await this.imap.messageMove(parseInt(id), trashFolder);
+    // Group by source folder so each mailbox is opened once.
+    const byFolder = new Map<string, number[]>();
+    for (const raw of messageIds) {
+      const { folder, uid } = parseImapMessageId(raw);
+      const list = byFolder.get(folder) ?? [];
+      list.push(uid);
+      byFolder.set(folder, list);
+    }
+    for (const [folder, uids] of byFolder) {
+      const lock = await this.imap.getMailboxLock(folder);
+      try {
+        for (const uid of uids) {
+          await this.imap.messageMove(uid, trashFolder);
+        }
+      } finally {
+        lock.release();
       }
-    } finally {
-      lock.release();
     }
   }
 
@@ -194,10 +328,13 @@ export class ImapProvider implements MailProvider {
   }
 
   async modifyLabels(messageId: string, add: string[], remove: string[]): Promise<void> {
-    const lock = await this.imap.getMailboxLock("INBOX");
+    const { folder, uid } = parseImapMessageId(messageId);
+    const addFlags = add.map(assertFlagName);
+    const removeFlags = remove.map(assertFlagName);
+    const lock = await this.imap.getMailboxLock(folder);
     try {
-      if (add.length) await this.imap.messageFlagsAdd(parseInt(messageId), add);
-      if (remove.length) await this.imap.messageFlagsRemove(parseInt(messageId), remove);
+      if (addFlags.length) await this.imap.messageFlagsAdd(uid, addFlags);
+      if (removeFlags.length) await this.imap.messageFlagsRemove(uid, removeFlags);
     } finally {
       lock.release();
     }
@@ -210,13 +347,25 @@ export class ImapProvider implements MailProvider {
   }
 
   async downloadAttachment(messageId: string, attachmentId: string): Promise<{ filename: string; data: Buffer; mimeType: string }> {
-    const lock = await this.imap.getMailboxLock("INBOX");
+    const { folder, uid } = parseImapMessageId(messageId);
+    const lock = await this.imap.getMailboxLock(folder);
     try {
-      const fetchResult = await this.imap.fetchOne(parseInt(messageId), { bodyParts: [attachmentId], uid: true });
-      if (!fetchResult) throw new Error(`Message ${messageId} not found`);
-      const part = fetchResult.bodyParts?.get(attachmentId);
-      if (!part) throw new Error(`Attachment ${attachmentId} not found`);
-      return { filename: attachmentId, data: Buffer.from(part), mimeType: "application/octet-stream" };
+      const meta = await this.imap.fetchOne(uid, { bodyStructure: true, uid: true });
+      if (!meta) throw new Error(`Message ${messageId} not found`);
+      const node = findBodyNode(meta.bodyStructure, attachmentId);
+      if (!node) throw new Error(`Attachment ${attachmentId} not found`);
+
+      const dl = await this.imap.download(uid, attachmentId, { uid: true });
+      if (!dl?.content) throw new Error(`Attachment ${attachmentId} could not be downloaded`);
+      const data = await readStreamToBuffer(dl.content);
+
+      const filename = dl.meta?.filename
+        ?? node.parameters?.name
+        ?? node.dispositionParameters?.filename
+        ?? `attachment-${attachmentId}`;
+      const mimeType = dl.meta?.contentType
+        ?? (node.type && node.subtype ? `${node.type}/${node.subtype}` : "application/octet-stream");
+      return { filename, data, mimeType };
     } finally {
       lock.release();
     }
@@ -226,30 +375,29 @@ export class ImapProvider implements MailProvider {
     const lock = await this.imap.getMailboxLock("INBOX");
     try {
       const status = (this.imap as any).mailbox;
-      const recent = await this.searchMessages("*", 5);
-      return { total: status?.exists ?? 0, unread: status?.unseen ?? 0, recent };
+      const total = status?.exists ?? 0;
+      const unread = status?.unseen ?? 0;
+      const uids = await this.listRecentUids(5);
+      if (uids.length === 0) return { total, unread, recent: [] };
+
+      const messages = await this.imap.fetchAll(uids, {
+        envelope: true, flags: true, bodyStructure: true, uid: true,
+      });
+      const recent: EmailSummary[] = messages.map((msg: any) => ({
+        id: `INBOX:${msg.uid}`,
+        from: formatAddress(msg.envelope?.from?.[0]),
+        to: formatAddresses(msg.envelope?.to),
+        subject: msg.envelope?.subject ?? "",
+        snippet: "",
+        date: msg.envelope?.date?.toISOString() ?? "",
+        labels: [],
+        hasAttachments: (msg.bodyStructure?.childNodes?.length ?? 0) > 0,
+      }));
+      return { total, unread, recent };
     } finally {
       lock.release();
     }
   }
-}
-
-function extractPlainBody(source: string): string {
-  const boundaryMatch = source.match(/boundary="?([^"\s;]+)"?/);
-  if (!boundaryMatch) {
-    const idx = source.indexOf("\r\n\r\n");
-    return idx >= 0 ? source.slice(idx + 4) : source;
-  }
-  const boundary = boundaryMatch[1];
-  const parts = source.split(`--${boundary}`);
-  for (const part of parts) {
-    if (part.includes("text/plain")) {
-      const bodyStart = part.indexOf("\r\n\r\n");
-      if (bodyStart >= 0) return part.slice(bodyStart + 4).trim();
-    }
-  }
-  const idx = source.indexOf("\r\n\r\n");
-  return idx >= 0 ? source.slice(idx + 4) : source;
 }
 
 function toNodemailerAttachments(atts: Attachment[] | undefined) {

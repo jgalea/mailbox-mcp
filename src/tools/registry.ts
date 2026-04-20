@@ -58,7 +58,7 @@ export async function handleToolCall(
       return {
         content: [{
           type: "text",
-          text: `${provider.type.toUpperCase()} accounts don't support ${tool.requiredCapability}. This feature is available on Gmail accounts.`,
+          text: `${provider.type.toUpperCase()} accounts don't support ${tool.requiredCapability}.`,
         }],
         isError: true,
       };

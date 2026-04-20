@@ -1,5 +1,8 @@
 #!/usr/bin/env node
 
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { dirname, join } from "node:path";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -21,8 +24,17 @@ import "./tools/manage.js";
 import "./tools/gmail-only.js";
 import "./tools/attachments.js";
 
+function readPackageVersion(): string {
+  try {
+    const pkgPath = join(dirname(fileURLToPath(import.meta.url)), "..", "package.json");
+    return JSON.parse(readFileSync(pkgPath, "utf-8")).version ?? "0.0.0";
+  } catch {
+    return "0.0.0";
+  }
+}
+
 const server = new Server(
-  { name: "mailbox-mcp", version: "0.1.0" },
+  { name: "mailbox-mcp", version: readPackageVersion() },
   { capabilities: { tools: {} } }
 );
 
@@ -35,8 +47,9 @@ async function getProvider(alias: string): Promise<MailProvider> {
 
   const config = accountManager.getAccount(alias);
 
+  const configDir = accountManager.getConfigDir();
+
   if (config.provider === "gmail") {
-    const configDir = accountManager.getAccountDir(alias).replace(/\/accounts\/.*/, "");
     const gmail = await getGmailClient(configDir, alias);
     const provider = new GmailProvider(gmail);
     providerCache.set(alias, provider);
@@ -49,7 +62,6 @@ async function getProvider(alias: string): Promise<MailProvider> {
     const { createTransport } = await import("nodemailer");
     const { decryptCredentials } = await import("./auth/imap-auth.js");
 
-    const configDir = accountManager.getAccountDir(alias).replace(/\/accounts\/.*/, "");
     const passphrase = process.env.MAILBOX_MCP_PASSPHRASE;
     if (!passphrase) {
       throw new Error(`IMAP account "${alias}" requires MAILBOX_MCP_PASSPHRASE to decrypt credentials. Set it in your MCP server environment.`);
@@ -65,6 +77,18 @@ async function getProvider(alias: string): Promise<MailProvider> {
       logger: false,
     });
     await imap.connect();
+
+    // IMAP connections time out after ~30 min of idle and emit `close`.
+    // Evict the cached provider so the next tool call opens a fresh connection.
+    imap.on("close", () => {
+      if (providerCache.get(alias) === provider) {
+        providerCache.delete(alias);
+        console.error(`IMAP connection closed for "${alias}"; will reconnect on next request`);
+      }
+    });
+    imap.on("error", (err: any) => {
+      console.error(`IMAP error on "${alias}":`, redactTokens(String(err?.message ?? err)));
+    });
 
     const smtp = createTransport({
       host: config.smtpHost,
@@ -83,7 +107,6 @@ async function getProvider(alias: string): Promise<MailProvider> {
 
   if (config.provider === "jmap") {
     const { decryptJmapCredentials } = await import("./auth/jmap-auth.js");
-    const configDir = accountManager.getAccountDir(alias).replace(/\/accounts\/.*/, "");
     const passphrase = process.env.MAILBOX_MCP_PASSPHRASE;
     if (!passphrase) {
       throw new Error(`JMAP account "${alias}" requires MAILBOX_MCP_PASSPHRASE to decrypt credentials. Set it in your MCP server environment.`);
@@ -120,13 +143,24 @@ server.setRequestHandler(CallToolRequestSchema, async (request) => {
   } catch (err: any) {
     // Clear cached provider on auth/connection errors so next call reconnects
     const alias = (args as any)?.account;
-    if (alias && (err.code === 401 || err.code === 403 || err.message?.includes("invalid_grant") || err.message?.includes("Token"))) {
+    if (alias && isAuthOrConnectionError(err)) {
       providerCache.delete(alias);
-      console.error(`Cleared provider cache for "${alias}" after auth error`);
+      console.error(`Cleared provider cache for "${alias}" after auth/connection error`);
     }
     return { content: [{ type: "text" as const, text: `Error: ${redactTokens(String(err.message ?? err))}` }], isError: true };
   }
 });
+
+function isAuthOrConnectionError(err: any): boolean {
+  const code = err?.code ?? err?.response?.status;
+  if (code === 401 || code === 403) return true;
+  const codeStr = typeof err?.code === "string" ? err.code : "";
+  if (codeStr === "NoConnection" || codeStr === "ECONNRESET" || codeStr === "EPIPE") return true;
+  const msg = String(err?.message ?? "");
+  return msg.includes("invalid_grant")
+    || msg.includes("Token has been expired")
+    || msg.includes("Invalid Credentials");
+}
 
 // Prevent crashes from unhandled rejections (e.g. expired tokens, network errors)
 process.on("unhandledRejection", (err) => {

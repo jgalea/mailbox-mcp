@@ -39,7 +39,8 @@ describe("GmailProvider", () => {
     expect(provider.type).toBe("gmail");
     expect(provider.capabilities.threads).toBe(true);
     expect(provider.capabilities.filters).toBe(true);
-    expect(provider.capabilities.snooze).toBe(true);
+    expect(provider.capabilities.templates).toBe(true);
+    expect(provider.capabilities.attachments).toBe(true);
   });
 
   it("searchMessages returns EmailSummary array", async () => {

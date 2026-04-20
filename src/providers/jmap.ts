@@ -1,5 +1,6 @@
 // src/providers/jmap.ts
 import { stripCRLF, validateNoSSRF } from "../security/validation.js";
+import { ensureReplyPrefix, ensureForwardPrefix } from "./headers.js";
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
   EmailThread, Label, SendOptions, ReplyOptions, ForwardOptions,
@@ -32,6 +33,23 @@ function requireSecureUrl(url: string, context: string): void {
   validateNoSSRF(url);
 }
 
+/**
+ * Extract a readable body from a JMAP Email/get response, preferring plain
+ * text when present and falling back to HTML for HTML-only messages.
+ */
+function extractJmapBody(e: any): string {
+  const values = e.bodyValues ?? {};
+  const textPartId = e.textBody?.[0]?.partId;
+  if (textPartId && values[textPartId]?.value) {
+    return values[textPartId].value;
+  }
+  const htmlPartId = e.htmlBody?.[0]?.partId;
+  if (htmlPartId && values[htmlPartId]?.value) {
+    return values[htmlPartId].value;
+  }
+  return "";
+}
+
 function formatJmapAddress(addr: JmapAddress | undefined): string {
   if (!addr) return "";
   return addr.name ? `${addr.name} <${addr.email}>` : addr.email;
@@ -44,8 +62,8 @@ function formatJmapAddresses(addrs: JmapAddress[] | undefined): string[] {
 export class JmapProvider implements MailProvider {
   readonly type = "jmap";
   readonly capabilities: ProviderCapabilities = {
-    threads: true, filters: false, snooze: false, templates: false,
-    signatures: false, vacation: false, contacts: false, unsubscribe: false,
+    threads: true, filters: false, templates: false,
+    signatures: false, vacation: false, unsubscribe: false,
     attachments: true, inboxSummary: true,
   };
 
@@ -164,9 +182,10 @@ export class JmapProvider implements MailProvider {
         properties: [
           "id", "threadId", "from", "to", "cc", "bcc", "replyTo",
           "subject", "preview", "receivedAt", "mailboxIds",
-          "hasAttachment", "textBody", "bodyValues", "attachments",
+          "hasAttachment", "textBody", "htmlBody", "bodyValues", "attachments",
         ],
         fetchTextBodyValues: true,
+        fetchHTMLBodyValues: true,
       }, "0"],
     ]);
 
@@ -174,8 +193,7 @@ export class JmapProvider implements MailProvider {
     if (list.length === 0) throw new Error(`Message ${messageId} not found`);
     const e = list[0];
 
-    const bodyPartId = e.textBody?.[0]?.partId;
-    const bodyText = bodyPartId ? (e.bodyValues?.[bodyPartId]?.value ?? "") : "";
+    const bodyText = extractJmapBody(e);
     const subject = e.subject ?? "";
 
     return {
@@ -214,9 +232,10 @@ export class JmapProvider implements MailProvider {
         properties: [
           "id", "threadId", "from", "to", "cc", "bcc", "replyTo",
           "subject", "preview", "receivedAt", "mailboxIds",
-          "hasAttachment", "textBody", "bodyValues", "attachments",
+          "hasAttachment", "textBody", "htmlBody", "bodyValues", "attachments",
         ],
         fetchTextBodyValues: true,
+        fetchHTMLBodyValues: true,
       }, "1"],
     ]);
 
@@ -225,8 +244,7 @@ export class JmapProvider implements MailProvider {
 
     const emails = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
     const messages: EmailMessage[] = emails.map((e: any) => {
-      const bodyPartId = e.textBody?.[0]?.partId;
-      const bodyText = bodyPartId ? (e.bodyValues?.[bodyPartId]?.value ?? "") : "";
+      const bodyText = extractJmapBody(e);
       return {
         id: e.id,
         threadId: e.threadId,
@@ -401,7 +419,7 @@ export class JmapProvider implements MailProvider {
     const replyAddress = original.replyTo || original.from;
     const to = [replyAddress];
     if (options?.replyAll) { to.push(...original.to, ...original.cc); }
-    const subject = original.subject.includes("Re:") ? original.subject : `Re: ${original.subject}`;
+    const subject = ensureReplyPrefix(original.subject);
     return this.sendMessage(to, subject, body, { html: options?.html, attachments: options?.attachments });
   }
 
@@ -410,7 +428,7 @@ export class JmapProvider implements MailProvider {
     const fwdBody = options?.message
       ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
       : `---------- Forwarded message ----------\n${original.body}`;
-    const subject = original.subject.includes("Fwd:") ? original.subject : `Fwd: ${original.subject}`;
+    const subject = ensureForwardPrefix(original.subject);
     return this.sendMessage(to, subject, fwdBody, { html: options?.html, attachments: options?.attachments });
   }
 

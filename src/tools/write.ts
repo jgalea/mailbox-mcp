@@ -18,6 +18,10 @@ export function checkSendLimit(account: string): string | null {
   return null;
 }
 
+export function clearSendLimit(account: string): void {
+  sendCounts.delete(account);
+}
+
 const attachmentsSchema = {
   type: "array",
   items: { type: "string" },

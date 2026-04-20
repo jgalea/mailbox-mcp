@@ -54,7 +54,7 @@ registerTool(
 registerTool(
   {
     name: "read_thread",
-    description: "Read an entire email conversation thread",
+    description: "Read an entire email conversation thread (Gmail and JMAP only)",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -72,7 +72,8 @@ registerTool(
       ...thread.messages.map((m, i) => `--- Message ${i + 1} ---\n**From:** ${fenceEmailHeader(m.from, "from")}\n**Date:** ${m.date}\n\n${fenceEmailContent(m.body)}`),
     ].join("\n");
     return { content: [{ type: "text", text }] };
-  }
+  },
+  "threads"
 );
 
 registerTool(

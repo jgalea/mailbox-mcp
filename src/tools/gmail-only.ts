@@ -46,14 +46,6 @@ registerTool(
     if (args.remove_label) action.removeLabelIds = [args.remove_label as string];
     if (args.archive) action.removeLabelIds = [...(action.removeLabelIds ?? []), "INBOX"];
     if (args.mark_read) action.removeLabelIds = [...(action.removeLabelIds ?? []), "UNREAD"];
-    const allowedActionKeys = new Set(["addLabelIds", "removeLabelIds"]);
-    const disallowed = Object.keys(action).filter(k => !allowedActionKeys.has(k));
-    if (disallowed.length > 0) {
-      return {
-        content: [{ type: "text", text: `Filter actions [${disallowed.join(", ")}] are blocked for security. Only label changes are allowed.` }],
-        isError: true,
-      };
-    }
     const res = await gmail.users.settings.filters.create({ userId: "me", requestBody: { criteria, action } });
     return { content: [{ type: "text", text: `Filter created: ${res.data.id}` }] };
   }, "filters"
@@ -67,42 +59,6 @@ registerTool(
     await gmail.users.settings.filters.delete({ userId: "me", id: args.filter_id as string });
     return { content: [{ type: "text", text: `Filter "${args.filter_id}" deleted.` }] };
   }, "filters"
-);
-
-// --- Snooze ---
-registerTool(
-  { name: "snooze_email", description: "Snooze an email until a specified time by removing from inbox and scheduling return",
-    inputSchema: { type: "object" as const, properties: {
-      account: { type: "string", description: "Account alias" }, message_id: { type: "string", description: "Message ID" },
-      until: { type: "string", description: "ISO 8601 datetime to unsnooze" },
-    }, required: ["account", "message_id", "until"] } },
-  async (args, ctx) => {
-    const provider = await ctx.getProvider(args.account as string);
-    await provider.modifyLabels(args.message_id as string, ["SNOOZED"], ["INBOX", "UNREAD"]);
-    return { content: [{ type: "text", text: `Message snoozed until ${args.until}. Removed from inbox.` }] };
-  }, "snooze"
-);
-
-registerTool(
-  { name: "list_snoozed", description: "List snoozed messages",
-    inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" } }, required: ["account"] } },
-  async (args, ctx) => {
-    const provider = await ctx.getProvider(args.account as string);
-    const results = await provider.searchMessages("in:snoozed", 20);
-    if (results.length === 0) return { content: [{ type: "text", text: "No snoozed messages." }] };
-    const lines = results.map((m) => `- **${m.id}**: ${fenceEmailHeader(m.from, "from")} — ${fenceEmailContent(m.subject, "subject")}`);
-    return { content: [{ type: "text", text: lines.join("\n") }] };
-  }, "snooze"
-);
-
-registerTool(
-  { name: "check_snoozed", description: "Check for snoozed messages that are due to resurface",
-    inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" } }, required: ["account"] } },
-  async (args, ctx) => {
-    const provider = await ctx.getProvider(args.account as string);
-    const results = await provider.searchMessages("in:snoozed", 50);
-    return { content: [{ type: "text", text: `${results.length} messages currently snoozed.` }] };
-  }, "snooze"
 );
 
 // --- Templates ---
@@ -249,15 +205,6 @@ registerTool(
     }
     return { content: [{ type: "text", text: results.join("\n") }] };
   }, "unsubscribe"
-);
-
-// --- Contacts ---
-registerTool(
-  { name: "search_contacts", description: "Search Google Contacts (requires People API scope)",
-    inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" }, query: { type: "string", description: "Search query (name or email)" } }, required: ["account", "query"] } },
-  async (args, _ctx) => {
-    return { content: [{ type: "text", text: `Contact search for "${args.query}": This feature requires the Google People API. Search your Gmail instead with: search_emails account="${args.account}" query="from:${args.query} OR to:${args.query}"` }] };
-  }, "contacts"
 );
 
 // --- Drafts (update/delete) ---

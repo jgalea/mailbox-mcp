@@ -1,5 +1,6 @@
 import { Readable } from "node:stream";
 import { buildRawMimeMessage } from "./mime.js";
+import { ensureReplyPrefix, ensureForwardPrefix, splitAddressList } from "./headers.js";
 
 // Lightweight types matching the gmail_v1 shapes we use, to avoid importing
 // the massive googleapis type definitions (which add ~2min to tsc builds).
@@ -21,7 +22,6 @@ interface GmailMessage {
 }
 // eslint-disable-next-line @typescript-eslint/no-explicit-any
 type GmailClient = any;
-import { stripCRLF } from "../security/validation.js";
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
   EmailThread, Label, SendOptions, ReplyOptions, ForwardOptions,
@@ -76,9 +76,9 @@ function parseMessage(data: GmailMessage): EmailMessage {
     id: data.id!,
     threadId: data.threadId ?? undefined,
     from: getHeader(headers, "From"),
-    to: getHeader(headers, "To").split(",").map((s) => s.trim()).filter(Boolean),
-    cc: getHeader(headers, "Cc").split(",").map((s) => s.trim()).filter(Boolean),
-    bcc: getHeader(headers, "Bcc").split(",").map((s) => s.trim()).filter(Boolean),
+    to: splitAddressList(getHeader(headers, "To")),
+    cc: splitAddressList(getHeader(headers, "Cc")),
+    bcc: splitAddressList(getHeader(headers, "Bcc")),
     replyTo: getHeader(headers, "Reply-To") || undefined,
     subject: getHeader(headers, "Subject"),
     snippet: data.snippet ?? "",
@@ -128,8 +128,8 @@ export function shouldUseMediaUpload(raw: Buffer, options?: GmailEncodeOptions):
 export class GmailProvider implements MailProvider {
   readonly type = "gmail";
   readonly capabilities: ProviderCapabilities = {
-    threads: true, filters: true, snooze: true, templates: true,
-    signatures: true, vacation: true, contacts: true, unsubscribe: true,
+    threads: true, filters: true, templates: true,
+    signatures: true, vacation: true, unsubscribe: true,
     attachments: true, inboxSummary: true,
   };
 
@@ -196,10 +196,10 @@ export class GmailProvider implements MailProvider {
 
     const replyAddress = replyTo || from;
     const recipients = options?.replyAll
-      ? [replyAddress, ...to.split(","), ...cc.split(",")].map((s) => s.trim()).filter(Boolean)
+      ? [replyAddress, ...splitAddressList(to), ...splitAddressList(cc)].filter(Boolean)
       : [replyAddress];
 
-    const reSubject = subject.startsWith("Re:") ? subject : `Re: ${subject}`;
+    const reSubject = ensureReplyPrefix(subject);
     const encodeOpts: GmailEncodeOptions = {
       html: options?.html,
       inReplyTo: msgId,
@@ -228,7 +228,7 @@ export class GmailProvider implements MailProvider {
     const fwdBody = options?.message
       ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
       : `---------- Forwarded message ----------\n${original.body}`;
-    const fwdSubject = original.subject.startsWith("Fwd:") ? original.subject : `Fwd: ${original.subject}`;
+    const fwdSubject = ensureForwardPrefix(original.subject);
     return this.sendMessage(to, fwdSubject, fwdBody, { html: options?.html, attachments: options?.attachments });
   }
 

@@ -7,7 +7,7 @@ import "../../src/tools/manage.js";
 function createMockProvider(): MailProvider {
   return {
     type: "gmail",
-    capabilities: { threads: true, filters: true, snooze: true, templates: true, signatures: true, vacation: true, contacts: true, unsubscribe: true, attachments: true, inboxSummary: true },
+    capabilities: { threads: true, filters: true, templates: true, signatures: true, vacation: true, unsubscribe: true, attachments: true, inboxSummary: true },
     listLabels: vi.fn().mockResolvedValue([{ id: "INBOX", name: "INBOX", type: "system" }, { id: "Label_1", name: "Work", type: "user" }]),
     createLabel: vi.fn().mockResolvedValue({ id: "Label_2", name: "New", type: "user" }),
     deleteLabel: vi.fn().mockResolvedValue(undefined),

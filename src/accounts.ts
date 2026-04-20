@@ -95,4 +95,8 @@ export class AccountManager {
   getAccountDir(alias: string): string {
     return join(this.configDir, "accounts", alias);
   }
+
+  getConfigDir(): string {
+    return this.configDir;
+  }
 }

@@ -9,7 +9,7 @@ mailbox-mcp is an [MCP server](https://modelcontextprotocol.io) that connects yo
 - **Multiple accounts, one server.** Work email, personal email, client accounts — all accessible through a single server. No need to run separate instances.
 - **Not just Gmail.** Supports Gmail (full API), any IMAP/SMTP provider (ProtonMail, corporate mail, self-hosted), and JMAP (Fastmail, Stalwart, Topicbox). Add providers without changing a line of tool code.
 - **Security-conscious.** Encrypted credentials (AES-256-GCM), prompt injection fencing on email content, rate limiting, TLS enforcement, SSRF protection with IP encoding evasion detection, input validation.
-- **36 tools.** Search, read, send, reply, forward, drafts, labels, filters, templates, signatures, vacation replies, attachments, unsubscribe, and more.
+- **Tools for the workflows that matter.** Search, read, send, reply, forward, drafts, labels, filters, templates, signatures, vacation replies, attachments, unsubscribe, and more.
 - **Zero native dependencies.** Pure Node.js. Install and run anywhere.
 
 ## Quick Start
@@ -43,7 +43,6 @@ Replace `/path/to/mailbox-mcp` with the actual path where you cloned the repo.
 
 1. Go to [Google Cloud Console](https://console.cloud.google.com/) and create a new project
 2. Enable the **Gmail API**: [APIs & Services > Library > Gmail API](https://console.cloud.google.com/apis/library/gmail.googleapis.com) > Enable
-3. Enable the **People API** (for contact search): [APIs & Services > Library > People API](https://console.cloud.google.com/apis/library/people.googleapis.com) > Enable
 
 #### 2. Set up OAuth consent screen
 
@@ -127,9 +126,6 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 | `create_filter` | Create a filter |
 | `list_filters` | List filters |
 | `delete_filter` | Delete a filter |
-| `snooze_email` | Snooze a message |
-| `list_snoozed` | List snoozed messages |
-| `check_snoozed` | Check snoozed status |
 | `save_template` | Save a template |
 | `list_templates` | List templates |
 | `delete_template` | Delete a template |
@@ -140,7 +136,6 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 | `set_vacation` | Configure vacation reply (supports date ranges, domain-only) |
 | `unsubscribe` | Find unsubscribe link |
 | `bulk_unsubscribe` | Bulk unsubscribe |
-| `search_contacts` | Search contacts |
 | `list_send_as` | List send-as aliases |
 
 ## Sending attachments

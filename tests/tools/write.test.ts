@@ -4,12 +4,12 @@ import { join } from "node:path";
 import { tmpdir } from "node:os";
 import { handleToolCall, type ToolContext } from "../../src/tools/registry.js";
 import type { MailProvider } from "../../src/providers/interface.js";
-import "../../src/tools/write.js";
+import { checkSendLimit, clearSendLimit } from "../../src/tools/write.js";
 
 function createMockProvider(): MailProvider {
   return {
     type: "gmail",
-    capabilities: { threads: true, filters: true, snooze: true, templates: true, signatures: true, vacation: true, contacts: true, unsubscribe: true, attachments: true, inboxSummary: true },
+    capabilities: { threads: true, filters: true, templates: true, signatures: true, vacation: true, unsubscribe: true, attachments: true, inboxSummary: true },
     sendMessage: vi.fn().mockResolvedValue("sent-msg-1"),
     replyToMessage: vi.fn().mockResolvedValue("reply-msg-1"),
     forwardMessage: vi.fn().mockResolvedValue("fwd-msg-1"),
@@ -113,6 +113,16 @@ describe("write tools", () => {
       );
       expect(result.isError).toBe(true);
       expect(result.content[0].text).toMatch(/Attachment not found/);
+    });
+  });
+
+  describe("rate limiter", () => {
+    it("clearSendLimit resets the counter for an alias", () => {
+      const alias = "clear-test";
+      for (let i = 0; i < 10; i++) expect(checkSendLimit(alias)).toBeNull();
+      expect(checkSendLimit(alias)).toMatch(/Rate limit/);
+      clearSendLimit(alias);
+      expect(checkSendLimit(alias)).toBeNull();
     });
   });
 });

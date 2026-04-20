@@ -374,6 +374,57 @@ describe("JmapProvider", () => {
     expect(apiCall.methodCalls[0][1].destroy).toEqual(["mbox-del"]);
   });
 
+  it("readMessage falls back to HTML body when no plain-text part exists", async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Email/get", { list: [{
+          id: "m-html", threadId: "t1",
+          from: [{ email: "sender@example.com" }],
+          to: [{ email: "me@example.com" }],
+          cc: [], bcc: [], replyTo: [],
+          subject: "HTML only",
+          preview: "Rich content",
+          receivedAt: "2026-03-31T10:00:00Z",
+          mailboxIds: {},
+          hasAttachment: false,
+          textBody: [],
+          htmlBody: [{ partId: "html-1" }],
+          bodyValues: { "html-1": { value: "<p>Hello</p>" } },
+          attachments: [],
+        }] }, "0"],
+      ]));
+    const msg = await provider.readMessage("m-html");
+    expect(msg.body).toBe("<p>Hello</p>");
+  });
+
+  it("readMessage prefers plain text when both plain and html are present", async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Email/get", { list: [{
+          id: "m-both", threadId: "t1",
+          from: [{ email: "sender@example.com" }],
+          to: [{ email: "me@example.com" }],
+          cc: [], bcc: [], replyTo: [],
+          subject: "Multipart",
+          preview: "",
+          receivedAt: "2026-03-31T10:00:00Z",
+          mailboxIds: {},
+          hasAttachment: false,
+          textBody: [{ partId: "text-1" }],
+          htmlBody: [{ partId: "html-1" }],
+          bodyValues: {
+            "text-1": { value: "Plain version" },
+            "html-1": { value: "<p>HTML version</p>" },
+          },
+          attachments: [],
+        }] }, "0"],
+      ]));
+    const msg = await provider.readMessage("m-both");
+    expect(msg.body).toBe("Plain version");
+  });
+
   it("downloadAttachment fetches blob", async () => {
     mockFetch
       .mockResolvedValueOnce(mockSessionResponse())

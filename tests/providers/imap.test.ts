@@ -6,8 +6,10 @@ function createMockImapClient() {
     connect: vi.fn(),
     logout: vi.fn(),
     search: vi.fn(),
+    fetch: vi.fn(),
     fetchOne: vi.fn(),
     fetchAll: vi.fn(),
+    download: vi.fn(),
     messageDelete: vi.fn(),
     messageFlagsAdd: vi.fn(),
     messageFlagsRemove: vi.fn(),
@@ -18,6 +20,8 @@ function createMockImapClient() {
     mailboxOpen: vi.fn(),
     append: vi.fn(),
     getMailboxLock: vi.fn().mockResolvedValue({ release: vi.fn() }),
+    on: vi.fn(),
+    mailbox: { exists: 0, unseen: 0 },
   };
 }
 
@@ -158,5 +162,83 @@ describe("ImapProvider", () => {
     await provider.trashMessages(["1"]);
     await provider.trashMessages(["2"]);
     expect(mockImap.list).toHaveBeenCalledTimes(1);
+  });
+
+  it("trashMessages locks the source folder encoded in compound message ids", async () => {
+    mockImap.list.mockResolvedValue([
+      { path: "INBOX", specialUse: "\\Inbox" },
+      { path: "Trash", specialUse: "\\Trash" },
+    ]);
+    mockImap.messageMove.mockResolvedValue(true);
+
+    await provider.trashMessages(["Sent:42", "Archive:99"]);
+    // Each source folder should have been locked exactly once.
+    const lockedFolders = mockImap.getMailboxLock.mock.calls.map(([folder]: any) => folder);
+    expect(lockedFolders).toContain("Sent");
+    expect(lockedFolders).toContain("Archive");
+    expect(mockImap.messageMove).toHaveBeenCalledWith(42, "Trash");
+    expect(mockImap.messageMove).toHaveBeenCalledWith(99, "Trash");
+  });
+
+  it("modifyLabels rejects non-flag label names", async () => {
+    await expect(provider.modifyLabels("1", ["Work"], [])).rejects.toThrow(/not a recognized IMAP flag/i);
+    await expect(provider.modifyLabels("1", [], ["INBOX"])).rejects.toThrow(/not a recognized IMAP flag/i);
+  });
+
+  it("modifyLabels normalises known flag names and applies them", async () => {
+    await provider.modifyLabels("INBOX:5", ["Seen"], ["Flagged"]);
+    expect(mockImap.messageFlagsAdd).toHaveBeenCalledWith(5, ["\\Seen"]);
+    expect(mockImap.messageFlagsRemove).toHaveBeenCalledWith(5, ["\\Flagged"]);
+  });
+
+  it("searchMessages with empty query uses recent-UID fallback instead of searching", async () => {
+    mockImap.mailbox.exists = 3;
+    mockImap.fetch.mockImplementation(async function* () {
+      yield { uid: 1 };
+      yield { uid: 2 };
+      yield { uid: 3 };
+    });
+    mockImap.fetchAll.mockResolvedValue([
+      { uid: 3, envelope: { from: [{ address: "a@x", name: "A" }], subject: "s", date: new Date(0), to: [] }, bodyStructure: { childNodes: [] } },
+    ]);
+
+    await provider.searchMessages("", 5);
+    expect(mockImap.search).not.toHaveBeenCalled();
+    expect(mockImap.fetch).toHaveBeenCalled();
+  });
+
+  it("searchMessages returns ids in folder:uid form", async () => {
+    mockImap.search.mockResolvedValue([7]);
+    mockImap.fetchAll.mockResolvedValue([
+      { uid: 7, envelope: { from: [{ address: "a@x" }], to: [], subject: "x", date: new Date(0) }, bodyStructure: { childNodes: [] } },
+    ]);
+    const results = await provider.searchMessages("x");
+    expect(results[0].id).toBe("INBOX:7");
+  });
+
+  it("downloadAttachment resolves filename and mime type from bodyStructure", async () => {
+    const { Readable } = await import("node:stream");
+    mockImap.fetchOne.mockResolvedValue({
+      uid: 10,
+      bodyStructure: {
+        childNodes: [
+          {
+            part: "2", type: "application", subtype: "pdf",
+            disposition: "attachment",
+            parameters: { name: "invoice.pdf" },
+            size: 4096,
+          },
+        ],
+      },
+    });
+    mockImap.download.mockResolvedValue({
+      meta: { filename: "invoice.pdf", contentType: "application/pdf" },
+      content: Readable.from([Buffer.from("%PDF-1.4")]),
+    });
+
+    const out = await provider.downloadAttachment("INBOX:10", "2");
+    expect(out.filename).toBe("invoice.pdf");
+    expect(out.mimeType).toBe("application/pdf");
+    expect(out.data.toString()).toBe("%PDF-1.4");
   });
 });

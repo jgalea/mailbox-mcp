@@ -1,4 +1,5 @@
 import { registerTool } from "./registry.js";
+import { clearSendLimit } from "./write.js";
 
 registerTool(
   {
@@ -47,8 +48,7 @@ registerTool(
     if (provider === "gmail") {
       ctx.accountManager.addAccount(alias, { provider: "gmail", email });
       const { authenticateGmail } = await import("../auth/gmail-oauth.js");
-      const configDir = ctx.accountManager.getAccountDir(alias).replace(/\/accounts\/.*/, "");
-      await authenticateGmail(configDir, alias);
+      await authenticateGmail(ctx.accountManager.getConfigDir(), alias);
       return { content: [{ type: "text", text: `Gmail account "${alias}" (${email}) authenticated successfully.` }] };
     }
 
@@ -71,8 +71,7 @@ registerTool(
 
       ctx.accountManager.addAccount(alias, { provider: "imap", email, host, port, smtpHost, smtpPort });
       const { encryptCredentials } = await import("../auth/imap-auth.js");
-      const configDir = ctx.accountManager.getAccountDir(alias).replace(/\/accounts\/.*/, "");
-      encryptCredentials(configDir, alias, { username, password }, passphrase);
+      encryptCredentials(ctx.accountManager.getConfigDir(), alias, { username, password }, passphrase);
       return { content: [{ type: "text", text: `IMAP account "${alias}" (${email}) configured. Credentials encrypted.` }] };
     }
 
@@ -109,8 +108,7 @@ registerTool(
       if (sessionUrl) config.sessionUrl = sessionUrl;
       ctx.accountManager.addAccount(alias, config);
       const { encryptJmapCredentials } = await import("../auth/jmap-auth.js");
-      const configDir = ctx.accountManager.getAccountDir(alias).replace(/\/accounts\/.*/, "");
-      encryptJmapCredentials(configDir, alias, { username, password }, passphrase);
+      encryptJmapCredentials(ctx.accountManager.getConfigDir(), alias, { username, password }, passphrase);
       return { content: [{ type: "text", text: `JMAP account "${alias}" (${email}) configured. Credentials encrypted.` }] };
     }
 
@@ -138,8 +136,7 @@ registerTool(
       };
     }
     const { authenticateGmail } = await import("../auth/gmail-oauth.js");
-    const configDir = ctx.accountManager.getAccountDir(alias).replace(/\/accounts\/.*/, "");
-    await authenticateGmail(configDir, alias);
+    await authenticateGmail(ctx.accountManager.getConfigDir(), alias);
     ctx.clearProviderCache?.(alias);
     return { content: [{ type: "text", text: `Gmail account "${alias}" (${account.email}) re-authenticated successfully.` }] };
   }
@@ -159,6 +156,7 @@ registerTool(
     const alias = args.alias as string;
     ctx.accountManager.removeAccount(alias);
     ctx.clearProviderCache?.(alias);
+    clearSendLimit(alias);
     return { content: [{ type: "text", text: `Account "${alias}" removed.` }] };
   }
 );

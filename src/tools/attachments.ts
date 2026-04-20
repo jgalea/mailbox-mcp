@@ -1,4 +1,4 @@
-import { join, resolve } from "node:path";
+import { join, resolve, dirname } from "node:path";
 import { writeFileSync, mkdirSync, existsSync, chmodSync, realpathSync } from "node:fs";
 import { homedir } from "node:os";
 import { registerTool } from "./registry.js";
@@ -11,11 +11,27 @@ const ALLOWED_BASE_DIRS = [
   "/tmp",
 ];
 
+/**
+ * Resolve a path's canonical form, walking up to the deepest existing
+ * ancestor so symlinks like macOS's `/tmp -> /private/tmp` are followed even
+ * when the target path itself has not been created yet.
+ */
+function canonicalize(path: string): string {
+  const absolute = resolve(path);
+  let probe = absolute;
+  while (!existsSync(probe)) {
+    const parent = dirname(probe);
+    if (parent === probe) return absolute;
+    probe = parent;
+  }
+  const realBase = realpathSync(probe);
+  return probe === absolute ? realBase : join(realBase, absolute.slice(probe.length));
+}
+
 function validateSavePath(dir: string): void {
-  // Use realpathSync to resolve symlinks before checking the allowlist
-  const resolved = existsSync(dir) ? realpathSync(dir) : resolve(dir);
+  const resolved = canonicalize(dir);
   const isAllowed = ALLOWED_BASE_DIRS.some((base) => {
-    const resolvedBase = existsSync(base) ? realpathSync(base) : resolve(base);
+    const resolvedBase = canonicalize(base);
     return resolved === resolvedBase || resolved.startsWith(resolvedBase + "/");
   });
   if (!isAllowed) {
