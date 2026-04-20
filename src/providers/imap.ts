@@ -80,8 +80,8 @@ export class ImapProvider implements MailProvider {
     const lock = await this.imap.getMailboxLock("INBOX");
     try {
       const fetchResult = await this.imap.fetchOne(parseInt(messageId), {
-        envelope: true, source: true, flags: true, bodyStructure: true, uid: true,
-      });
+        envelope: true, source: true, flags: true, bodyStructure: true,
+      }, { uid: true });
       if (!fetchResult) throw new Error(`Message ${messageId} not found`);
       const msg = fetchResult;
 
@@ -169,7 +169,7 @@ export class ImapProvider implements MailProvider {
     const lock = await this.imap.getMailboxLock("INBOX");
     try {
       for (const id of messageIds) {
-        await this.imap.messageMove(parseInt(id), trashFolder);
+        await this.imap.messageMove(parseInt(id), trashFolder, { uid: true });
       }
     } finally {
       lock.release();
@@ -196,8 +196,8 @@ export class ImapProvider implements MailProvider {
   async modifyLabels(messageId: string, add: string[], remove: string[]): Promise<void> {
     const lock = await this.imap.getMailboxLock("INBOX");
     try {
-      if (add.length) await this.imap.messageFlagsAdd(parseInt(messageId), add);
-      if (remove.length) await this.imap.messageFlagsRemove(parseInt(messageId), remove);
+      if (add.length) await this.imap.messageFlagsAdd(parseInt(messageId), add, { uid: true });
+      if (remove.length) await this.imap.messageFlagsRemove(parseInt(messageId), remove, { uid: true });
     } finally {
       lock.release();
     }
@@ -212,7 +212,7 @@ export class ImapProvider implements MailProvider {
   async downloadAttachment(messageId: string, attachmentId: string): Promise<{ filename: string; data: Buffer; mimeType: string }> {
     const lock = await this.imap.getMailboxLock("INBOX");
     try {
-      const fetchResult = await this.imap.fetchOne(parseInt(messageId), { bodyParts: [attachmentId], uid: true });
+      const fetchResult = await this.imap.fetchOne(parseInt(messageId), { bodyParts: [attachmentId] }, { uid: true });
       if (!fetchResult) throw new Error(`Message ${messageId} not found`);
       const part = fetchResult.bodyParts?.get(attachmentId);
       if (!part) throw new Error(`Attachment ${attachmentId} not found`);
