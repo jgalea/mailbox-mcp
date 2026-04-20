@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.5.1 — 2026-04-20
+
+### Changed
+- Release tarballs now ship with [npm provenance](https://docs.npmjs.com/generating-provenance-statements) attestations. Published via GitHub Actions OIDC (trusted publisher).
+
 ## 0.5.0 — 2026-04-20
 
 ### Breaking
