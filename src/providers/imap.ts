@@ -196,8 +196,12 @@ export class ImapProvider implements MailProvider {
   async modifyLabels(messageId: string, add: string[], remove: string[]): Promise<void> {
     const lock = await this.imap.getMailboxLock("INBOX");
     try {
-      if (add.length) await this.imap.messageFlagsAdd(parseInt(messageId), add);
-      if (remove.length) await this.imap.messageFlagsRemove(parseInt(messageId), remove);
+      const addResolved = resolveImapFlags(add);
+      const removeResolved = resolveImapFlags(remove);
+      const toAdd = [...addResolved.direct, ...removeResolved.inverted];
+      const toRemove = [...removeResolved.direct, ...addResolved.inverted];
+      if (toAdd.length) await this.imap.messageFlagsAdd(parseInt(messageId), toAdd);
+      if (toRemove.length) await this.imap.messageFlagsRemove(parseInt(messageId), toRemove);
     } finally {
       lock.release();
     }
@@ -232,6 +236,29 @@ export class ImapProvider implements MailProvider {
       lock.release();
     }
   }
+}
+
+// Maps MCP virtual label names to RFC 3501 IMAP system flags.
+// UNREAD is special: it is the logical inverse of \Seen, so adding UNREAD
+// means removing \Seen and vice versa — handled via the `inverted` field.
+const LABEL_TO_FLAG: Record<string, string> = {
+  FLAGGED: "\\Flagged",
+  ANSWERED: "\\Answered",
+  DELETED: "\\Deleted",
+  DRAFT: "\\Draft",
+};
+
+function resolveImapFlags(labels: string[]): { direct: string[]; inverted: string[] } {
+  const direct: string[] = [];
+  const inverted: string[] = [];
+  for (const label of labels) {
+    if (label === "UNREAD") {
+      inverted.push("\\Seen");
+    } else {
+      direct.push(LABEL_TO_FLAG[label] ?? label);
+    }
+  }
+  return { direct, inverted };
 }
 
 function extractPlainBody(source: string): string {
