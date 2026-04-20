@@ -45,6 +45,21 @@ function encodeHeaderParameter(value: string): string {
   return `=?utf-8?B?${encoded}?=`;
 }
 
+/**
+ * Encode an unstructured header value (like Subject) as an RFC 2047
+ * encoded-word when it contains non-ASCII. Headers must be 7-bit clean;
+ * sending raw UTF-8 gets mangled by relays that treat bytes as Latin-1
+ * and re-encode.
+ */
+function encodeHeaderValue(value: string): string {
+  // eslint-disable-next-line no-control-regex
+  if (/^[\x20-\x7e]*$/.test(value)) {
+    return value;
+  }
+  const encoded = Buffer.from(value, "utf-8").toString("base64");
+  return `=?utf-8?B?${encoded}?=`;
+}
+
 /** Build a raw RFC 2822 message as a Buffer, with optional multipart/mixed attachments. */
 export function buildRawMimeMessage(opts: BuildMimeOptions): Buffer {
   const hasAttachments = !!opts.attachments && opts.attachments.length > 0;
@@ -56,7 +71,7 @@ export function buildRawMimeMessage(opts: BuildMimeOptions): Buffer {
   if (opts.cc?.length) headers.push(`Cc: ${stripCRLF(opts.cc.join(", "))}`);
   if (opts.bcc?.length) headers.push(`Bcc: ${stripCRLF(opts.bcc.join(", "))}`);
   if (opts.replyTo) headers.push(`Reply-To: ${stripCRLF(opts.replyTo)}`);
-  headers.push(`Subject: ${stripCRLF(opts.subject)}`);
+  headers.push(`Subject: ${encodeHeaderValue(stripCRLF(opts.subject))}`);
   if (opts.inReplyTo) headers.push(`In-Reply-To: ${stripCRLF(opts.inReplyTo)}`);
   if (opts.references) headers.push(`References: ${stripCRLF(opts.references)}`);
   headers.push("MIME-Version: 1.0");
