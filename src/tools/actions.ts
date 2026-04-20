@@ -1,5 +1,5 @@
-import { registerTool } from "./registry.js";
-import { fenceEmailContent, fenceEmailHeader } from "../security/sanitize.js";
+import { registerTool, sanitizeErrorMessage } from "./registry.js";
+import { fenceEmailContent, fenceEmailHeader, redactTokens } from "../security/sanitize.js";
 
 registerTool(
   {
@@ -188,7 +188,8 @@ registerTool(
     for (const [i, outcome] of settled.entries()) {
       const alias = accounts[i];
       if (outcome.status === "rejected") {
-        sections.push(`## ${alias}\n\nError: ${String(outcome.reason)}`);
+        const raw = outcome.reason instanceof Error ? outcome.reason.message : String(outcome.reason);
+        sections.push(`## ${alias}\n\nError: ${sanitizeErrorMessage(raw, redactTokens)}`);
         continue;
       }
       const { results } = outcome.value;

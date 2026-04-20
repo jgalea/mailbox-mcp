@@ -470,10 +470,10 @@ export class ImapProvider implements MailProvider {
     const cc = formatAddresses(envelope?.cc);
     const bcc = formatAddresses(envelope?.bcc);
     const result = await this.smtp.sendMail({
-      from: this.email,
-      to: to.join(", "),
-      cc: cc.length ? cc.join(", ") : undefined,
-      bcc: bcc.length ? bcc.join(", ") : undefined,
+      from: stripCRLF(this.email),
+      to: stripCRLF(to.join(", ")),
+      cc: cc.length ? stripCRLF(cc.join(", ")) : undefined,
+      bcc: bcc.length ? stripCRLF(bcc.join(", ")) : undefined,
       raw: rawSource,
     });
 

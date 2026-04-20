@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.6.1 — 2026-04-20
+
+### Security
+- `multi_account_search` now redacts tokens and strips absolute paths from per-account error messages before returning them to the MCP client.
+- Defense-in-depth: `stripCRLF` applied to the SMTP envelope addresses in the IMAP `sendDraft` path.
+
 ## 0.6.0 — 2026-04-20
 
 ### Added
