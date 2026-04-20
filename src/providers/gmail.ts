@@ -25,7 +25,7 @@ type GmailClient = any;
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
   EmailThread, Label, SendOptions, ReplyOptions, ForwardOptions,
-  DraftOptions, AttachmentInfo,
+  DraftOptions, AttachmentInfo, DraftSummary, UnreadCount, ExportedMessage,
 } from "./interface.js";
 
 function getHeader(headers: GmailMessagePartHeader[] | undefined, name: string): string {
@@ -135,8 +135,9 @@ export class GmailProvider implements MailProvider {
 
   constructor(private gmail: GmailClient) {}
 
-  async searchMessages(query: string, maxResults: number = 20): Promise<EmailSummary[]> {
-    const res = await this.gmail.users.messages.list({ userId: "me", q: query, maxResults });
+  async searchMessages(query: string, maxResults: number = 20, folder?: string): Promise<EmailSummary[]> {
+    const q = folder ? `label:${folder} ${query}`.trim() : query;
+    const res = await this.gmail.users.messages.list({ userId: "me", q, maxResults });
     const messages = res.data.messages ?? [];
     const results: EmailSummary[] = [];
     for (const msg of messages) {
@@ -325,6 +326,81 @@ export class GmailProvider implements MailProvider {
       unread: unreadRes.data.resultSizeEstimate ?? 0,
       recent,
     };
+  }
+
+  async markRead(messageId: string, read: boolean): Promise<void> {
+    if (read) await this.modifyLabels(messageId, [], ["UNREAD"]);
+    else await this.modifyLabels(messageId, ["UNREAD"], []);
+  }
+
+  async starMessage(messageId: string, starred: boolean): Promise<void> {
+    if (starred) await this.modifyLabels(messageId, ["STARRED"], []);
+    else await this.modifyLabels(messageId, [], ["STARRED"]);
+  }
+
+  async archiveMessage(messageId: string): Promise<void> {
+    await this.modifyLabels(messageId, [], ["INBOX"]);
+  }
+
+  async listDrafts(maxResults: number = 20): Promise<DraftSummary[]> {
+    const res = await this.gmail.users.drafts.list({ userId: "me", maxResults });
+    const drafts = res.data.drafts ?? [];
+    const results: DraftSummary[] = [];
+    for (const d of drafts) {
+      const full = await this.gmail.users.drafts.get({ userId: "me", id: d.id!, format: "metadata" });
+      const headers = full.data.message?.payload?.headers ?? [];
+      results.push({
+        id: d.id!,
+        messageId: full.data.message?.id ?? undefined,
+        subject: getHeader(headers, "Subject"),
+        to: splitAddressList(getHeader(headers, "To")),
+        snippet: full.data.message?.snippet ?? "",
+        updatedAt: full.data.message?.internalDate
+          ? new Date(parseInt(full.data.message.internalDate, 10)).toISOString()
+          : "",
+      });
+    }
+    return results;
+  }
+
+  async sendDraft(draftId: string): Promise<string> {
+    const res = await this.gmail.users.drafts.send({
+      userId: "me",
+      requestBody: { id: draftId },
+    });
+    return res.data.id ?? "";
+  }
+
+  async countUnreadByLabel(): Promise<UnreadCount[]> {
+    const list = await this.gmail.users.labels.list({ userId: "me" });
+    const labels = (list.data.labels ?? []) as any[];
+    const counts: UnreadCount[] = [];
+    for (const l of labels) {
+      const detail = await this.gmail.users.labels.get({ userId: "me", id: l.id });
+      const unread = detail.data.messagesUnread ?? 0;
+      if (unread > 0) {
+        counts.push({ labelId: l.id, name: l.name, unread });
+      }
+    }
+    return counts.sort((a, b) => b.unread - a.unread);
+  }
+
+  async exportMessage(messageId: string): Promise<ExportedMessage> {
+    const res = await this.gmail.users.messages.get({ userId: "me", id: messageId, format: "raw" });
+    const raw = res.data.raw as string | undefined;
+    if (!raw) throw new Error(`Message ${messageId} has no raw content`);
+    return {
+      filename: `${messageId}.eml`,
+      data: Buffer.from(raw, "base64url"),
+      mimeType: "message/rfc822",
+    };
+  }
+
+  async messagesSince(since: string, folder?: string, maxResults: number = 50): Promise<EmailSummary[]> {
+    const epoch = Math.floor(new Date(since).getTime() / 1000);
+    if (!Number.isFinite(epoch)) throw new Error(`Invalid since timestamp: ${since}`);
+    const labelPart = folder ? ` label:${folder}` : "";
+    return this.searchMessages(`after:${epoch}${labelPart}`, maxResults);
   }
 
   get gmailApi() { return this.gmail; }

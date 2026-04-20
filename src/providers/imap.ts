@@ -6,7 +6,7 @@ import { ensureReplyPrefix, ensureForwardPrefix } from "./headers.js";
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
   EmailThread, Label, SendOptions, ReplyOptions, ForwardOptions,
-  DraftOptions, AttachmentInfo, Attachment,
+  DraftOptions, AttachmentInfo, Attachment, DraftSummary, UnreadCount, ExportedMessage,
 } from "./interface.js";
 
 function formatAddress(addr: { address?: string; name?: string } | undefined): string {
@@ -138,8 +138,7 @@ export class ImapProvider implements MailProvider {
     return resolved;
   }
 
-  async searchMessages(query: string, maxResults: number = 20): Promise<EmailSummary[]> {
-    const folder = "INBOX";
+  async searchMessages(query: string, maxResults: number = 20, folder: string = "INBOX"): Promise<EmailSummary[]> {
     const lock = await this.imap.getMailboxLock(folder);
     try {
       const trimmed = query.trim();
@@ -394,6 +393,154 @@ export class ImapProvider implements MailProvider {
         hasAttachments: (msg.bodyStructure?.childNodes?.length ?? 0) > 0,
       }));
       return { total, unread, recent };
+    } finally {
+      lock.release();
+    }
+  }
+
+  async markRead(messageId: string, read: boolean): Promise<void> {
+    const { folder, uid } = parseImapMessageId(messageId);
+    const lock = await this.imap.getMailboxLock(folder);
+    try {
+      if (read) await this.imap.messageFlagsAdd(uid, ["\\Seen"]);
+      else await this.imap.messageFlagsRemove(uid, ["\\Seen"]);
+    } finally {
+      lock.release();
+    }
+  }
+
+  async starMessage(messageId: string, starred: boolean): Promise<void> {
+    const { folder, uid } = parseImapMessageId(messageId);
+    const lock = await this.imap.getMailboxLock(folder);
+    try {
+      if (starred) await this.imap.messageFlagsAdd(uid, ["\\Flagged"]);
+      else await this.imap.messageFlagsRemove(uid, ["\\Flagged"]);
+    } finally {
+      lock.release();
+    }
+  }
+
+  async archiveMessage(messageId: string): Promise<void> {
+    const { folder, uid } = parseImapMessageId(messageId);
+    const archive = await this.findSpecialFolder("\\Archive");
+    const lock = await this.imap.getMailboxLock(folder);
+    try {
+      await this.imap.messageMove(uid, archive);
+    } finally {
+      lock.release();
+    }
+  }
+
+  async listDrafts(maxResults: number = 20): Promise<DraftSummary[]> {
+    const drafts = await this.findSpecialFolder("\\Drafts");
+    const lock = await this.imap.getMailboxLock(drafts);
+    try {
+      const uids = await this.listRecentUids(maxResults);
+      if (uids.length === 0) return [];
+      const messages = await this.imap.fetchAll(uids, {
+        envelope: true, uid: true, internalDate: true,
+      });
+      return messages.map((msg: any) => ({
+        id: `${drafts}:${msg.uid}`,
+        subject: msg.envelope?.subject ?? "",
+        to: formatAddresses(msg.envelope?.to),
+        snippet: "",
+        updatedAt: (msg.internalDate ?? msg.envelope?.date)?.toISOString?.() ?? "",
+      }));
+    } finally {
+      lock.release();
+    }
+  }
+
+  async sendDraft(draftId: string): Promise<string> {
+    const { folder, uid } = parseImapMessageId(draftId);
+    const lock = await this.imap.getMailboxLock(folder);
+    let rawSource: Buffer;
+    let envelope: any;
+    try {
+      const msg: any = await this.imap.fetchOne(uid, { source: true, envelope: true, uid: true });
+      if (!msg || !msg.source) throw new Error(`Draft ${draftId} not found`);
+      rawSource = msg.source;
+      envelope = msg.envelope;
+    } finally {
+      lock.release();
+    }
+
+    const to = formatAddresses(envelope?.to);
+    const cc = formatAddresses(envelope?.cc);
+    const bcc = formatAddresses(envelope?.bcc);
+    const result = await this.smtp.sendMail({
+      from: this.email,
+      to: to.join(", "),
+      cc: cc.length ? cc.join(", ") : undefined,
+      bcc: bcc.length ? bcc.join(", ") : undefined,
+      raw: rawSource,
+    });
+
+    // Remove sent draft from Drafts folder
+    const cleanupLock = await this.imap.getMailboxLock(folder);
+    try {
+      await this.imap.messageDelete(uid, { uid: true });
+    } finally {
+      cleanupLock.release();
+    }
+
+    return result.messageId ?? "";
+  }
+
+  async countUnreadByLabel(): Promise<UnreadCount[]> {
+    const folders = await this.imap.list();
+    const counts: UnreadCount[] = [];
+    for (const f of folders as any[]) {
+      if (f.flags?.has?.("\\Noselect")) continue;
+      try {
+        const status = await (this.imap as any).status(f.path, { unseen: true });
+        const unseen = status?.unseen ?? 0;
+        if (unseen > 0) counts.push({ labelId: f.path, name: f.path, unread: unseen });
+      } catch {
+        // skip folders we can't STATUS
+      }
+    }
+    return counts.sort((a, b) => b.unread - a.unread);
+  }
+
+  async exportMessage(messageId: string): Promise<ExportedMessage> {
+    const { folder, uid } = parseImapMessageId(messageId);
+    const lock = await this.imap.getMailboxLock(folder);
+    try {
+      const msg: any = await this.imap.fetchOne(uid, { source: true, uid: true });
+      if (!msg || !msg.source) throw new Error(`Message ${messageId} not found`);
+      return {
+        filename: `${uid}.eml`,
+        data: msg.source,
+        mimeType: "message/rfc822",
+      };
+    } finally {
+      lock.release();
+    }
+  }
+
+  async messagesSince(since: string, folder: string = "INBOX", maxResults: number = 50): Promise<EmailSummary[]> {
+    const date = new Date(since);
+    if (Number.isNaN(date.getTime())) throw new Error(`Invalid since timestamp: ${since}`);
+    const lock = await this.imap.getMailboxLock(folder);
+    try {
+      const uids = (await this.imap.search({ since: date })) || [];
+      const limited = uids.slice(-maxResults).reverse();
+      if (limited.length === 0) return [];
+      const messages = await this.imap.fetchAll(limited, {
+        envelope: true, flags: true, bodyStructure: true, uid: true,
+      });
+      return messages.map((msg: any) => ({
+        id: `${folder}:${msg.uid}`,
+        from: formatAddress(msg.envelope?.from?.[0]),
+        to: formatAddresses(msg.envelope?.to),
+        subject: msg.envelope?.subject ?? "",
+        snippet: "",
+        date: msg.envelope?.date?.toISOString() ?? "",
+        labels: [],
+        hasAttachments: (msg.bodyStructure?.childNodes?.length ?? 0) > 0,
+      }));
     } finally {
       lock.release();
     }

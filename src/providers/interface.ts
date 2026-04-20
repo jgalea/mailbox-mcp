@@ -31,6 +31,27 @@ export interface AttachmentInfo {
   size: number;
 }
 
+export interface DraftSummary {
+  id: string;
+  messageId?: string;
+  subject: string;
+  to: string[];
+  snippet: string;
+  updatedAt: string;
+}
+
+export interface UnreadCount {
+  labelId: string;
+  name: string;
+  unread: number;
+}
+
+export interface ExportedMessage {
+  filename: string;
+  data: Buffer;
+  mimeType: string;
+}
+
 /** Resolved outbound attachment, ready to hand to a provider. */
 export interface Attachment {
   filename: string;
@@ -87,7 +108,7 @@ export interface MailProvider {
   readonly type: string;
   readonly capabilities: ProviderCapabilities;
 
-  searchMessages(query: string, maxResults?: number): Promise<EmailSummary[]>;
+  searchMessages(query: string, maxResults?: number, folder?: string): Promise<EmailSummary[]>;
   readMessage(messageId: string): Promise<EmailMessage>;
   readThread(threadId: string): Promise<EmailThread>;
   sendMessage(to: string[], subject: string, body: string, options?: SendOptions): Promise<string>;
@@ -104,4 +125,13 @@ export interface MailProvider {
 
   downloadAttachment(messageId: string, attachmentId: string): Promise<{ filename: string; data: Buffer; mimeType: string }>;
   inboxSummary(): Promise<{ total: number; unread: number; recent: EmailSummary[] }>;
+
+  markRead(messageId: string, read: boolean): Promise<void>;
+  starMessage(messageId: string, starred: boolean): Promise<void>;
+  archiveMessage(messageId: string): Promise<void>;
+  listDrafts(maxResults?: number): Promise<DraftSummary[]>;
+  sendDraft(draftId: string): Promise<string>;
+  countUnreadByLabel(): Promise<UnreadCount[]>;
+  exportMessage(messageId: string): Promise<ExportedMessage>;
+  messagesSince(since: string, folder?: string, maxResults?: number): Promise<EmailSummary[]>;
 }

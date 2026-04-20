@@ -23,6 +23,8 @@ import "./tools/write.js";
 import "./tools/manage.js";
 import "./tools/gmail-only.js";
 import "./tools/attachments.js";
+import "./tools/actions.js";
+import "./tools/export.js";
 
 function readPackageVersion(): string {
   try {

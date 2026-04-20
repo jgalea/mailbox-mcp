@@ -103,20 +103,30 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 | `authenticate` | Add a new account |
 | `reauth` | Re-run OAuth for an existing Gmail account (use when refresh token expires with `invalid_grant`) |
 | `remove_account` | Remove an account |
-| `search_emails` | Search messages |
+| `search_emails` | Search messages (optional `folder` to scope the search) |
+| `multi_account_search` | Run the same query across every configured account in parallel |
 | `read_email` | Read a message |
-| `read_thread` | Read a conversation thread |
+| `read_thread` | Read a conversation thread (Gmail + JMAP) |
 | `send_email` | Send a new email (supports `attachments`) |
 | `reply_email` | Reply to a message (supports `attachments`) |
 | `forward_email` | Forward a message (supports `attachments`) |
 | `create_draft` | Create a draft (supports reply drafts via `in_reply_to`, `attachments`) |
+| `list_drafts` | List drafts for an account |
+| `send_draft` | Send an existing draft |
 | `trash_emails` | Trash messages |
+| `mark_read` | Mark a message as read or unread |
+| `star_email` | Star or unstar a message |
+| `archive_email` | Archive a message (remove from inbox) |
 | `list_labels` | List labels/folders |
 | `create_label` | Create a label/folder |
 | `delete_label` | Delete a label/folder |
 | `modify_email` | Modify message labels |
 | `batch_modify_emails` | Bulk modify labels |
+| `count_unread_by_label` | Show unread message counts per label/folder |
 | `download_attachment` | Download an attachment |
+| `export_email` | Save a message as a `.eml` file |
+| `export_thread` | Save every message in a thread as `.eml` files (Gmail + JMAP) |
+| `emails_since` | List messages received after a given timestamp |
 | `inbox_summary` | Inbox overview |
 
 ### Gmail-Only

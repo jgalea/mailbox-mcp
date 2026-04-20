@@ -1,5 +1,25 @@
 # Changelog
 
+## 0.6.0 — 2026-04-20
+
+### Added
+
+- **`mark_read`** — mark a message as read or unread. Wraps the provider-specific flag/label dance.
+- **`star_email`** — star or unstar a message (Gmail `STARRED` label, IMAP `\Flagged`, JMAP `$flagged` keyword).
+- **`archive_email`** — archive a message. Gmail removes the INBOX label, IMAP moves to the Archive folder, JMAP moves out of the inbox mailbox.
+- **`list_drafts`** / **`send_draft`** — drafts are now first-class. List existing drafts and send them as-is.
+- **`count_unread_by_label`** — show unread counts per label/folder, sorted by volume.
+- **`export_email`** / **`export_thread`** — save messages as raw RFC 822 `.eml` files to a safe directory. Useful for archival or migration.
+- **`emails_since`** — list messages received after a given ISO 8601 timestamp. Optional `folder` scope. Enables polling-based assistants.
+- **`multi_account_search`** — run the same query across every configured account in parallel, merged by alias.
+- `search_emails` now accepts an optional **`folder`** parameter. IMAP searches the given mailbox (was INBOX-only); Gmail adds a `label:` prefix; JMAP filters by `inMailbox`.
+
+### Changed
+
+- `MailProvider.searchMessages` gained an optional third parameter (`folder?`). Backwards compatible.
+- New optional `MailProvider` methods: `markRead`, `starMessage`, `archiveMessage`, `listDrafts`, `sendDraft`, `countUnreadByLabel`, `exportMessage`, `messagesSince`.
+- Save-path validation (`/tmp`, `~/Downloads/mailbox-mcp`) extracted from `attachments.ts` into a shared `security/save-path.ts` module and reused by the export tools.
+
 ## 0.5.1 — 2026-04-20
 
 ### Changed

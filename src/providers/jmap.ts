@@ -4,7 +4,7 @@ import { ensureReplyPrefix, ensureForwardPrefix } from "./headers.js";
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
   EmailThread, Label, SendOptions, ReplyOptions, ForwardOptions,
-  DraftOptions, AttachmentInfo, Attachment,
+  DraftOptions, AttachmentInfo, Attachment, DraftSummary, UnreadCount, ExportedMessage,
 } from "./interface.js";
 
 interface JmapSession {
@@ -139,12 +139,23 @@ export class JmapProvider implements MailProvider {
     return body.methodResponses;
   }
 
-  async searchMessages(query: string, maxResults: number = 20): Promise<EmailSummary[]> {
+  async searchMessages(query: string, maxResults: number = 20, folder?: string): Promise<EmailSummary[]> {
     const session = await this.ensureSession();
+    const filter: any = query ? { text: query } : {};
+    if (folder) {
+      const mbox = await this.findMailboxByNameOrId(folder);
+      filter.inMailbox = mbox.id;
+      if (query) {
+        // JMAP expects AND of text and inMailbox — wrap in operator.
+        Object.assign(filter, { operator: "AND", conditions: [{ text: query }, { inMailbox: mbox.id }] });
+        delete filter.text;
+        delete filter.inMailbox;
+      }
+    }
     const responses = await this.apiCall([
       ["Email/query", {
         accountId: session.accountId,
-        filter: { text: query },
+        filter,
         sort: [{ property: "receivedAt", isAscending: false }],
         limit: maxResults,
       }, "0"],
@@ -345,6 +356,20 @@ export class JmapProvider implements MailProvider {
     return { id: list[0].id, name: list[0].name };
   }
 
+  /** Resolve a mailbox by its id or display name. Prefers exact id match. */
+  private async findMailboxByNameOrId(nameOrId: string): Promise<{ id: string; name: string }> {
+    const session = await this.ensureSession();
+    const responses = await this.apiCall([
+      ["Mailbox/get", { accountId: session.accountId, properties: ["id", "name"] }, "0"],
+    ]);
+    const list = responses.find((r: any) => r[0] === "Mailbox/get")?.[1]?.list ?? [];
+    const byId = list.find((m: any) => m.id === nameOrId);
+    if (byId) return { id: byId.id, name: byId.name };
+    const byName = list.find((m: any) => m.name?.toLowerCase() === nameOrId.toLowerCase());
+    if (byName) return { id: byName.id, name: byName.name };
+    throw new Error(`Mailbox "${nameOrId}" not found`);
+  }
+
   /**
    * Upload an attachment blob to the JMAP server and return a reference
    * to the server-assigned blobId. Used as the first step in sending or
@@ -536,5 +561,159 @@ export class JmapProvider implements MailProvider {
     if (!res.ok) throw new Error(`Failed to download attachment: ${res.status}`);
     const buffer = Buffer.from(await res.arrayBuffer());
     return { filename: attachment.filename, data: buffer, mimeType: attachment.mimeType };
+  }
+
+  async markRead(messageId: string, read: boolean): Promise<void> {
+    const session = await this.ensureSession();
+    await this.apiCall([
+      ["Email/set", {
+        accountId: session.accountId,
+        update: { [messageId]: { "keywords/$seen": read ? true : null } },
+      }, "0"],
+    ]);
+  }
+
+  async starMessage(messageId: string, starred: boolean): Promise<void> {
+    const session = await this.ensureSession();
+    await this.apiCall([
+      ["Email/set", {
+        accountId: session.accountId,
+        update: { [messageId]: { "keywords/$flagged": starred ? true : null } },
+      }, "0"],
+    ]);
+  }
+
+  async archiveMessage(messageId: string): Promise<void> {
+    const session = await this.ensureSession();
+    const archive = await this.findMailboxByRole("archive").catch(() => null);
+    const inbox = await this.findMailboxByRole("inbox");
+    const update: Record<string, any> = { [`mailboxIds/${inbox.id}`]: null };
+    if (archive) update[`mailboxIds/${archive.id}`] = true;
+    await this.apiCall([
+      ["Email/set", { accountId: session.accountId, update: { [messageId]: update } }, "0"],
+    ]);
+  }
+
+  async listDrafts(maxResults: number = 20): Promise<DraftSummary[]> {
+    const session = await this.ensureSession();
+    const drafts = await this.findMailboxByRole("drafts");
+    const responses = await this.apiCall([
+      ["Email/query", {
+        accountId: session.accountId,
+        filter: { inMailbox: drafts.id },
+        sort: [{ property: "receivedAt", isAscending: false }],
+        limit: maxResults,
+      }, "0"],
+      ["Email/get", {
+        accountId: session.accountId,
+        "#ids": { resultOf: "0", name: "Email/query", path: "/ids" },
+        properties: ["id", "subject", "to", "preview", "receivedAt"],
+      }, "1"],
+    ]);
+    const emails = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
+    return emails.map((e: any) => ({
+      id: e.id,
+      subject: e.subject ?? "",
+      to: formatJmapAddresses(e.to),
+      snippet: e.preview ?? "",
+      updatedAt: e.receivedAt ?? "",
+    }));
+  }
+
+  async sendDraft(draftId: string): Promise<string> {
+    const session = await this.ensureSession();
+    // Submit the existing draft for delivery. JMAP EmailSubmission/set with
+    // onSuccessUpdateEmail clears the $draft keyword and moves it to Sent.
+    const responses = await this.apiCall([
+      ["EmailSubmission/set", {
+        accountId: session.accountId,
+        create: { sub0: { emailId: draftId } },
+        onSuccessUpdateEmail: {
+          [`#sub0`]: { "keywords/$draft": null },
+        },
+      }, "0"],
+    ]);
+    const created = responses.find((r: any) => r[0] === "EmailSubmission/set")?.[1]?.created?.sub0;
+    if (!created) throw new Error(`Failed to submit draft ${draftId}`);
+    return draftId;
+  }
+
+  async countUnreadByLabel(): Promise<UnreadCount[]> {
+    const session = await this.ensureSession();
+    const responses = await this.apiCall([
+      ["Mailbox/get", {
+        accountId: session.accountId,
+        properties: ["id", "name", "unreadEmails"],
+      }, "0"],
+    ]);
+    const list = responses.find((r: any) => r[0] === "Mailbox/get")?.[1]?.list ?? [];
+    return list
+      .filter((m: any) => (m.unreadEmails ?? 0) > 0)
+      .map((m: any) => ({ labelId: m.id, name: m.name, unread: m.unreadEmails }))
+      .sort((a: UnreadCount, b: UnreadCount) => b.unread - a.unread);
+  }
+
+  async exportMessage(messageId: string): Promise<ExportedMessage> {
+    const session = await this.ensureSession();
+    const responses = await this.apiCall([
+      ["Email/get", {
+        accountId: session.accountId,
+        ids: [messageId],
+        properties: ["id", "blobId"],
+      }, "0"],
+    ]);
+    const list = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
+    if (list.length === 0) throw new Error(`Message ${messageId} not found`);
+    const blobId = list[0].blobId;
+    if (!blobId) throw new Error(`Message ${messageId} has no blobId`);
+
+    const url = session.downloadUrl
+      .replace("{accountId}", encodeURIComponent(session.accountId))
+      .replace("{blobId}", encodeURIComponent(blobId))
+      .replace("{name}", encodeURIComponent(`${messageId}.eml`))
+      .replace("{type}", encodeURIComponent("message/rfc822"));
+    requireSecureUrl(url, "JMAP export URL");
+    const res = await fetch(url, { headers: { Authorization: this.authHeader }, redirect: "error" });
+    if (!res.ok) throw new Error(`Failed to export message: ${res.status}`);
+    const buffer = Buffer.from(await res.arrayBuffer());
+    return { filename: `${messageId}.eml`, data: buffer, mimeType: "message/rfc822" };
+  }
+
+  async messagesSince(since: string, folder?: string, maxResults: number = 50): Promise<EmailSummary[]> {
+    const date = new Date(since);
+    if (Number.isNaN(date.getTime())) throw new Error(`Invalid since timestamp: ${since}`);
+    const session = await this.ensureSession();
+    const filter: any = { after: date.toISOString() };
+    if (folder) {
+      const mbox = await this.findMailboxByNameOrId(folder);
+      filter.operator = "AND";
+      filter.conditions = [{ after: date.toISOString() }, { inMailbox: mbox.id }];
+      delete filter.after;
+    }
+    const responses = await this.apiCall([
+      ["Email/query", {
+        accountId: session.accountId,
+        filter,
+        sort: [{ property: "receivedAt", isAscending: false }],
+        limit: maxResults,
+      }, "0"],
+      ["Email/get", {
+        accountId: session.accountId,
+        "#ids": { resultOf: "0", name: "Email/query", path: "/ids" },
+        properties: ["id", "threadId", "from", "to", "subject", "preview", "receivedAt", "mailboxIds", "hasAttachment"],
+      }, "1"],
+    ]);
+    const emails = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
+    return emails.map((e: any) => ({
+      id: e.id,
+      threadId: e.threadId,
+      from: formatJmapAddress(e.from?.[0]),
+      to: formatJmapAddresses(e.to),
+      subject: e.subject ?? "",
+      snippet: e.preview ?? "",
+      date: e.receivedAt ?? "",
+      labels: Object.keys(e.mailboxIds ?? {}),
+      hasAttachments: e.hasAttachment ?? false,
+    }));
   }
 }

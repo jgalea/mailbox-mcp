@@ -4,20 +4,25 @@ import { fenceEmailContent, fenceEmailHeader } from "../security/sanitize.js";
 registerTool(
   {
     name: "search_emails",
-    description: "Search emails in an account. Gmail supports full Gmail search syntax. IMAP searches subject and body.",
+    description: "Search emails in an account. Gmail supports full Gmail search syntax. IMAP searches subject and body. Optional folder parameter scopes the search to a specific label/folder.",
     inputSchema: {
       type: "object" as const,
       properties: {
         account: { type: "string", description: "Account alias" },
         query: { type: "string", description: "Search query" },
         max_results: { type: "number", description: "Max results (default 20)" },
+        folder: { type: "string", description: "Optional folder/label to scope the search (IMAP mailbox path, Gmail label name, or JMAP mailbox name/id)" },
       },
       required: ["account", "query"],
     },
   },
   async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
-    const results = await provider.searchMessages(args.query as string, (args.max_results as number) ?? 20);
+    const results = await provider.searchMessages(
+      args.query as string,
+      (args.max_results as number) ?? 20,
+      args.folder as string | undefined,
+    );
     if (results.length === 0) return { content: [{ type: "text", text: "No messages found." }] };
     const lines = results.map((m) => `**${m.id}** | ${fenceEmailHeader(m.from, "from")} | ${fenceEmailContent(m.subject, "subject")}\n  ${fenceEmailContent(m.snippet)} (${m.date})`);
     return { content: [{ type: "text", text: lines.join("\n\n") }] };
