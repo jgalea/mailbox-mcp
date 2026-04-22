@@ -32,6 +32,10 @@ function getHeader(headers: GmailMessagePartHeader[] | undefined, name: string):
   return headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? "";
 }
 
+function* chunkIds(ids: string[], size: number): Generator<string[]> {
+  for (let i = 0; i < ids.length; i += size) yield ids.slice(i, i + size);
+}
+
 function decodeBody(payload: GmailMessagePart): string {
   if (payload.body?.data) {
     return Buffer.from(payload.body.data, "base64url").toString("utf-8");
@@ -270,8 +274,14 @@ export class GmailProvider implements MailProvider {
   }
 
   async trashMessages(messageIds: string[]): Promise<void> {
-    for (const id of messageIds) {
-      await this.gmail.users.messages.trash({ userId: "me", id });
+    // Gmail's batchModify accepts up to 1000 ids per call; adding the TRASH label
+    // is equivalent to users.messages.trash but avoids N sequential round trips
+    // (which stalls the MCP connection on large batches).
+    for (const chunk of chunkIds(messageIds, 1000)) {
+      await this.gmail.users.messages.batchModify({
+        userId: "me",
+        requestBody: { ids: chunk, addLabelIds: ["TRASH"] },
+      });
     }
   }
 
@@ -301,8 +311,13 @@ export class GmailProvider implements MailProvider {
   }
 
   async batchModifyLabels(messageIds: string[], add: string[], remove: string[]): Promise<void> {
-    for (const id of messageIds) {
-      await this.modifyLabels(id, add, remove);
+    // Single API call per 1000 ids. Previously a per-message loop, which stalled
+    // the MCP connection on batches in the hundreds.
+    for (const chunk of chunkIds(messageIds, 1000)) {
+      await this.gmail.users.messages.batchModify({
+        userId: "me",
+        requestBody: { ids: chunk, addLabelIds: add, removeLabelIds: remove },
+      });
     }
   }
 

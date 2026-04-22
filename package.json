@@ -1,6 +1,6 @@
 {
   "name": "mailbox-mcp",
-  "version": "0.6.1",
+  "version": "0.6.2",
   "description": "Multi-account, multi-provider email MCP server",
   "type": "module",
   "main": "dist/server.js",

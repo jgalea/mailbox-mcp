@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.2 — 2026-04-22
+
+### Fixed
+- Gmail `batch_modify_emails` and `trash_emails` no longer stall the MCP connection on large batches. Both paths now issue a single `users.messages.batchModify` API call per 1000 message ids instead of looping one request per message. Previously, calls in the hundreds would trigger `MCP error -32000: Connection closed` before the Gmail side had finished processing.
+
 ## 0.6.1 — 2026-04-20
 
 ### Security

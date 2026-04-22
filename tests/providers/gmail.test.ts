@@ -93,16 +93,53 @@ describe("GmailProvider", () => {
     expect(msg.subject).toBe("Test");
   });
 
-  it("trashMessages processes sequentially", async () => {
-    const order: string[] = [];
-    mockGmail.users.messages.trash.mockImplementation(async (args: any) => {
-      order.push(args.id);
-      return {};
-    });
+  it("trashMessages uses batchModify with the TRASH label", async () => {
+    mockGmail.users.messages.batchModify.mockResolvedValue({});
 
     await provider.trashMessages(["msg-1", "msg-2", "msg-3"]);
-    expect(order).toEqual(["msg-1", "msg-2", "msg-3"]);
-    expect(mockGmail.users.messages.trash).toHaveBeenCalledTimes(3);
+    expect(mockGmail.users.messages.batchModify).toHaveBeenCalledTimes(1);
+    expect(mockGmail.users.messages.batchModify).toHaveBeenCalledWith({
+      userId: "me",
+      requestBody: { ids: ["msg-1", "msg-2", "msg-3"], addLabelIds: ["TRASH"] },
+    });
+    // trash should never be called per-message now
+    expect(mockGmail.users.messages.trash).not.toHaveBeenCalled();
+  });
+
+  it("trashMessages chunks batches larger than 1000 ids", async () => {
+    mockGmail.users.messages.batchModify.mockResolvedValue({});
+    const ids = Array.from({ length: 2500 }, (_, i) => `m-${i}`);
+
+    await provider.trashMessages(ids);
+    expect(mockGmail.users.messages.batchModify).toHaveBeenCalledTimes(3);
+    const calls = mockGmail.users.messages.batchModify.mock.calls;
+    expect(calls[0][0].requestBody.ids).toHaveLength(1000);
+    expect(calls[1][0].requestBody.ids).toHaveLength(1000);
+    expect(calls[2][0].requestBody.ids).toHaveLength(500);
+  });
+
+  it("batchModifyLabels uses a single batchModify call for small batches", async () => {
+    mockGmail.users.messages.batchModify.mockResolvedValue({});
+
+    await provider.batchModifyLabels(["a", "b"], ["STARRED"], ["UNREAD"]);
+    expect(mockGmail.users.messages.batchModify).toHaveBeenCalledTimes(1);
+    expect(mockGmail.users.messages.batchModify).toHaveBeenCalledWith({
+      userId: "me",
+      requestBody: { ids: ["a", "b"], addLabelIds: ["STARRED"], removeLabelIds: ["UNREAD"] },
+    });
+    // per-message modify should not be called
+    expect(mockGmail.users.messages.modify).not.toHaveBeenCalled();
+  });
+
+  it("batchModifyLabels chunks batches larger than 1000 ids", async () => {
+    mockGmail.users.messages.batchModify.mockResolvedValue({});
+    const ids = Array.from({ length: 1500 }, (_, i) => `m-${i}`);
+
+    await provider.batchModifyLabels(ids, [], ["UNREAD", "INBOX"]);
+    expect(mockGmail.users.messages.batchModify).toHaveBeenCalledTimes(2);
+    const calls = mockGmail.users.messages.batchModify.mock.calls;
+    expect(calls[0][0].requestBody.ids).toHaveLength(1000);
+    expect(calls[1][0].requestBody.ids).toHaveLength(500);
   });
 
   describe("outbound attachments", () => {
