@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.6.3 — 2026-04-23
+
+### Added
+- Lifecycle logging at `~/.mailbox-mcp/debug.log` (mode 0600, 1MB rotation). Records `start`, `transport-close`, `transport-error`, `stdin-end`, `signal`, `exit`, `unhandledRejection`, `uncaughtException`, `fatal`. Silent disconnects now leave a paper trail so the next occurrence can be diagnosed instead of guessed at. Tokens are redacted via the existing `redactTokens` helper before being written.
+
 ## 0.6.2 — 2026-04-22
 
 ### Fixed

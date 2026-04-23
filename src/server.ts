@@ -1,8 +1,9 @@
 #!/usr/bin/env node
 
-import { readFileSync } from "node:fs";
+import { readFileSync, appendFileSync, mkdirSync, statSync, renameSync } from "node:fs";
 import { fileURLToPath } from "node:url";
 import { dirname, join } from "node:path";
+import { homedir } from "node:os";
 import { Server } from "@modelcontextprotocol/sdk/server/index.js";
 import { StdioServerTransport } from "@modelcontextprotocol/sdk/server/stdio.js";
 import {
@@ -15,6 +16,27 @@ import { getAllToolDefinitions, handleToolCall } from "./tools/registry.js";
 import type { MailProvider } from "./providers/interface.js";
 import { getGmailClient } from "./auth/gmail-oauth.js";
 import { redactTokens } from "./security/sanitize.js";
+
+// Lightweight lifecycle log so silent disconnects leave a paper trail.
+// Lives in ~/.mailbox-mcp/debug.log with a 1MB rotation cap.
+const LOG_DIR = join(homedir(), ".mailbox-mcp");
+const LOG_PATH = join(LOG_DIR, "debug.log");
+const LOG_MAX_BYTES = 1024 * 1024;
+
+function logEvent(kind: string, detail: string = ""): void {
+  try {
+    mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
+    try {
+      if (statSync(LOG_PATH).size > LOG_MAX_BYTES) {
+        renameSync(LOG_PATH, LOG_PATH + ".old");
+      }
+    } catch {}
+    const line = `${new Date().toISOString()} pid=${process.pid} ${kind}${detail ? " " + redactTokens(detail) : ""}\n`;
+    appendFileSync(LOG_PATH, line, { mode: 0o600 });
+  } catch {
+    // Best-effort only — never let diagnostics crash the server.
+  }
+}
 
 // Import tool registrations (side-effect: registers tools)
 import "./tools/account.js";
@@ -166,19 +188,44 @@ function isAuthOrConnectionError(err: any): boolean {
 
 // Prevent crashes from unhandled rejections (e.g. expired tokens, network errors)
 process.on("unhandledRejection", (err) => {
-  console.error("Unhandled rejection (kept alive):", redactTokens(String(err)));
+  const msg = redactTokens(String(err));
+  console.error("Unhandled rejection (kept alive):", msg);
+  logEvent("unhandledRejection", msg);
 });
 process.on("uncaughtException", (err) => {
-  console.error("Uncaught exception (kept alive):", redactTokens(String(err)));
+  const msg = redactTokens(String(err));
+  console.error("Uncaught exception (kept alive):", msg);
+  logEvent("uncaughtException", msg);
 });
+
+// Record *why* the process exited so Jean can tell a clean shutdown apart
+// from a client-initiated disconnect or an OOM kill.
+for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGPIPE"] as const) {
+  process.on(sig, () => {
+    logEvent("signal", sig);
+    process.exit(0);
+  });
+}
+process.on("exit", (code) => { logEvent("exit", `code=${code}`); });
+
+// stdin EOF is how Claude Code tells the server "you're done". Log it so we
+// can distinguish a clean client disconnect from a crash.
+process.stdin.on("end", () => { logEvent("stdin-end"); });
+process.stdin.on("error", (err) => { logEvent("stdin-error", String(err)); });
+process.stdout.on("error", (err) => { logEvent("stdout-error", String(err)); });
 
 async function main() {
   const transport = new StdioServerTransport();
+  transport.onclose = () => { logEvent("transport-close"); };
+  transport.onerror = (err: unknown) => { logEvent("transport-error", String(err)); };
   await server.connect(transport);
+  logEvent("start", `version=${readPackageVersion()}`);
   console.error("mailbox-mcp server running on stdio");
 }
 
 main().catch((err) => {
-  console.error("Fatal:", redactTokens(String(err)));
+  const msg = redactTokens(String(err));
+  console.error("Fatal:", msg);
+  logEvent("fatal", msg);
   process.exit(1);
 });
