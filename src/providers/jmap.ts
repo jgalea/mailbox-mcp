@@ -180,6 +180,11 @@ export class JmapProvider implements MailProvider {
     }));
   }
 
+  async findMessageIds(query: string, folder?: string, maxResults?: number): Promise<string[]> {
+    const messages = await this.searchMessages(query, maxResults ?? 1000, folder);
+    return messages.map((m) => m.id);
+  }
+
   async readMessage(messageId: string): Promise<EmailMessage> {
     return this.fetchMessage(messageId);
   }

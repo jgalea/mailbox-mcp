@@ -118,6 +118,40 @@ describe("GmailProvider", () => {
     expect(calls[2][0].requestBody.ids).toHaveLength(500);
   });
 
+  it("findMessageIds paginates through nextPageToken without fetching metadata", async () => {
+    mockGmail.users.messages.list
+      .mockResolvedValueOnce({ data: { messages: [{ id: "a" }, { id: "b" }], nextPageToken: "p2" } })
+      .mockResolvedValueOnce({ data: { messages: [{ id: "c" }] } });
+
+    const ids = await provider.findMessageIds("label:Newsletters");
+
+    expect(ids).toEqual(["a", "b", "c"]);
+    expect(mockGmail.users.messages.list).toHaveBeenCalledTimes(2);
+    expect(mockGmail.users.messages.list.mock.calls[0][0]).toMatchObject({ q: "label:Newsletters", maxResults: 500 });
+    expect(mockGmail.users.messages.list.mock.calls[1][0]).toMatchObject({ pageToken: "p2" });
+    expect(mockGmail.users.messages.get).not.toHaveBeenCalled();
+  });
+
+  it("findMessageIds applies the folder as a label: prefix", async () => {
+    mockGmail.users.messages.list.mockResolvedValue({ data: { messages: [] } });
+
+    await provider.findMessageIds("older_than:30d", "Meetups");
+
+    expect(mockGmail.users.messages.list.mock.calls[0][0].q).toBe("label:Meetups older_than:30d");
+  });
+
+  it("findMessageIds caps results at maxResults and stops paginating", async () => {
+    mockGmail.users.messages.list.mockResolvedValue({
+      data: { messages: Array.from({ length: 10 }, (_, i) => ({ id: `m-${i}` })) },
+    });
+
+    const ids = await provider.findMessageIds("foo", undefined, 7);
+
+    expect(ids).toHaveLength(7);
+    expect(mockGmail.users.messages.list).toHaveBeenCalledTimes(1);
+    expect(mockGmail.users.messages.list.mock.calls[0][0].maxResults).toBe(7);
+  });
+
   it("batchModifyLabels uses a single batchModify call for small batches", async () => {
     mockGmail.users.messages.batchModify.mockResolvedValue({});
 

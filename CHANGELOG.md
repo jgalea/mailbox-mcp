@@ -1,5 +1,11 @@
 # Changelog
 
+## 0.7.0 — 2026-04-24
+
+### Added
+- **`bulk_trash`** — search-and-trash in one call. Takes a query (Gmail syntax for Gmail accounts) plus optional `folder` scope, `dry_run` flag, and `max` safety cap, paginates the search, and trashes all matching ids via `trashMessages`. Solves the "I want to nuke a whole label" workflow without a manual search → collect → trash dance.
+- **`MailProvider.findMessageIds(query, folder?, maxResults?)`** — id-only paginated search. Returns just the matching message ids without the per-message metadata fetch that `searchMessages` does, so it can scale to thousands of results cheaply. Gmail uses `users.messages.list` with `pageToken` (500-id pages, capped at `maxResults` when provided); IMAP and JMAP delegate to `searchMessages` and project to ids.
+
 ## 0.6.3 — 2026-04-23
 
 ### Added

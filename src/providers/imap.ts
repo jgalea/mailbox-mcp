@@ -167,6 +167,11 @@ export class ImapProvider implements MailProvider {
     }
   }
 
+  async findMessageIds(query: string, folder?: string, maxResults?: number): Promise<string[]> {
+    const messages = await this.searchMessages(query, maxResults ?? 1000, folder);
+    return messages.map((m) => m.id);
+  }
+
   private async searchByText(query: string, maxResults: number): Promise<number[]> {
     const searchResult = await this.imap.search({ or: [{ subject: query }, { body: query }] });
     const uids = searchResult || [];

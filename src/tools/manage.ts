@@ -72,3 +72,30 @@ registerTool(
     return { content: [{ type: "text", text: `${(args.message_ids as string[]).length} messages trashed.` }] };
   }
 );
+
+registerTool(
+  { name: "bulk_trash", description: "Trash all messages matching a query. Paginates the search and batch-trashes the IDs in one call. Use dry_run to see the count before committing. Useful for label cleanups (e.g. trash everything in 'Newsletters' or older than 90 days).",
+    inputSchema: { type: "object" as const, properties: {
+      account: { type: "string", description: "Account alias" },
+      query: { type: "string", description: "Search query (Gmail syntax for Gmail accounts, e.g. 'label:Meetups' or 'from:noreply@example.com older_than:30d')" },
+      folder: { type: "string", description: "Optional folder/label scope. On Gmail this becomes a 'label:' prefix; on IMAP/JMAP it scopes the search to that mailbox." },
+      dry_run: { type: "boolean", description: "If true, return the matching count without trashing anything." },
+      max: { type: "number", description: "Safety cap on number of messages to trash. Defaults to no cap; set this to bound destructive scope." },
+    }, required: ["account", "query"] } },
+  async (args, ctx) => {
+    const provider = await ctx.getProvider(args.account as string);
+    const ids = await provider.findMessageIds(
+      args.query as string,
+      args.folder as string | undefined,
+      args.max as number | undefined,
+    );
+    if (args.dry_run) {
+      return { content: [{ type: "text", text: `${ids.length} messages match (dry run, nothing trashed).` }] };
+    }
+    if (ids.length === 0) {
+      return { content: [{ type: "text", text: "No messages matched the query." }] };
+    }
+    await provider.trashMessages(ids);
+    return { content: [{ type: "text", text: `${ids.length} messages trashed.` }] };
+  }
+);

@@ -154,6 +154,26 @@ export class GmailProvider implements MailProvider {
     return results;
   }
 
+  async findMessageIds(query: string, folder?: string, maxResults?: number): Promise<string[]> {
+    const q = folder ? `label:${folder} ${query}`.trim() : query;
+    const ids: string[] = [];
+    let pageToken: string | undefined;
+    do {
+      const remaining = maxResults != null ? maxResults - ids.length : undefined;
+      if (remaining != null && remaining <= 0) break;
+      const pageSize = remaining != null ? Math.min(500, remaining) : 500;
+      const res = await this.gmail.users.messages.list({
+        userId: "me", q, maxResults: pageSize, pageToken,
+      });
+      for (const m of res.data.messages ?? []) {
+        if (m.id) ids.push(m.id);
+        if (maxResults != null && ids.length >= maxResults) return ids;
+      }
+      pageToken = res.data.nextPageToken ?? undefined;
+    } while (pageToken);
+    return ids;
+  }
+
   async readMessage(messageId: string): Promise<EmailMessage> {
     return this.fetchMessage(messageId);
   }

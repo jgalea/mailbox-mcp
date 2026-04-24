@@ -14,6 +14,7 @@ function createMockProvider(): MailProvider {
     modifyLabels: vi.fn().mockResolvedValue(undefined),
     batchModifyLabels: vi.fn().mockResolvedValue(undefined),
     trashMessages: vi.fn().mockResolvedValue(undefined),
+    findMessageIds: vi.fn().mockResolvedValue([]),
   } as unknown as MailProvider;
 }
 
@@ -46,6 +47,35 @@ describe("manage tools", () => {
   it("modify_email modifies labels", async () => {
     await handleToolCall("modify_email", { account: "personal", message_id: "msg-1", add_labels: ["Work"], remove_labels: ["INBOX"] }, ctx);
     expect(mockProvider.modifyLabels).toHaveBeenCalledWith("msg-1", ["Work"], ["INBOX"]);
+  });
+
+  it("bulk_trash searches and trashes matching messages", async () => {
+    (mockProvider.findMessageIds as any).mockResolvedValue(["a", "b", "c"]);
+    const result = await handleToolCall("bulk_trash", { account: "personal", query: "label:Newsletters" }, ctx);
+    expect(mockProvider.findMessageIds).toHaveBeenCalledWith("label:Newsletters", undefined, undefined);
+    expect(mockProvider.trashMessages).toHaveBeenCalledWith(["a", "b", "c"]);
+    expect(result.content[0].text).toContain("3");
+  });
+
+  it("bulk_trash with dry_run reports the count without trashing", async () => {
+    (mockProvider.findMessageIds as any).mockResolvedValue(["a", "b", "c", "d"]);
+    const result = await handleToolCall("bulk_trash", { account: "personal", query: "label:Meetups", dry_run: true }, ctx);
+    expect(mockProvider.trashMessages).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("4");
+    expect(result.content[0].text).toContain("dry run");
+  });
+
+  it("bulk_trash forwards folder and max into the search", async () => {
+    (mockProvider.findMessageIds as any).mockResolvedValue(["a"]);
+    await handleToolCall("bulk_trash", { account: "personal", query: "older_than:90d", folder: "Updates", max: 500 }, ctx);
+    expect(mockProvider.findMessageIds).toHaveBeenCalledWith("older_than:90d", "Updates", 500);
+  });
+
+  it("bulk_trash skips the trash call when nothing matches", async () => {
+    (mockProvider.findMessageIds as any).mockResolvedValue([]);
+    const result = await handleToolCall("bulk_trash", { account: "personal", query: "from:nobody@example.com" }, ctx);
+    expect(mockProvider.trashMessages).not.toHaveBeenCalled();
+    expect(result.content[0].text).toContain("No messages matched");
   });
 });
 

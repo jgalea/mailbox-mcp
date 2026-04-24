@@ -109,6 +109,7 @@ export interface MailProvider {
   readonly capabilities: ProviderCapabilities;
 
   searchMessages(query: string, maxResults?: number, folder?: string): Promise<EmailSummary[]>;
+  findMessageIds(query: string, folder?: string, maxResults?: number): Promise<string[]>;
   readMessage(messageId: string): Promise<EmailMessage>;
   readThread(threadId: string): Promise<EmailThread>;
   sendMessage(to: string[], subject: string, body: string, options?: SendOptions): Promise<string>;
