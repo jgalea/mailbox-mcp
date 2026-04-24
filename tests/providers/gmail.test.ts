@@ -69,6 +69,38 @@ describe("GmailProvider", () => {
     expect(results[0].subject).toBe("Test email");
   });
 
+  it("searchMessages fetches metadata in parallel and preserves list order", async () => {
+    const ids = ["a", "b", "c", "d", "e"];
+    mockGmail.users.messages.list.mockResolvedValue({
+      data: { messages: ids.map((id) => ({ id })) },
+    });
+    // Make "a" resolve last and "c" first to prove the result array is indexed
+    // by input position, not completion order. Sequential code would deadlock
+    // here because "a" awaits "c" — parallel code completes fine.
+    const delays: Record<string, number> = { a: 50, b: 10, c: 0, d: 5, e: 20 };
+    mockGmail.users.messages.get.mockImplementation(async ({ id }: { id: string }) => {
+      await new Promise((r) => setTimeout(r, delays[id]));
+      return {
+        data: {
+          id, threadId: `t-${id}`, labelIds: ["INBOX"], snippet: "",
+          payload: {
+            headers: [
+              { name: "From", value: `sender-${id}@example.com` },
+              { name: "To", value: "me@example.com" },
+              { name: "Subject", value: `Subject ${id}` },
+              { name: "Date", value: "Thu, 27 Mar 2026 10:00:00 +0000" },
+            ],
+            parts: [],
+          },
+        },
+      };
+    });
+
+    const results = await provider.searchMessages("in:inbox", 5);
+    expect(results.map((r) => r.id)).toEqual(["a", "b", "c", "d", "e"]);
+    expect(mockGmail.users.messages.get).toHaveBeenCalledTimes(5);
+  });
+
   it("readMessage returns raw EmailMessage (fencing applied at MCP exit)", async () => {
     mockGmail.users.messages.get.mockResolvedValue({
       data: {

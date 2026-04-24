@@ -99,3 +99,38 @@ registerTool(
     return { content: [{ type: "text", text: `${ids.length} messages trashed.` }] };
   }
 );
+
+registerTool(
+  { name: "bulk_modify", description: "Add or remove labels on all messages matching a query. Same fast search-then-batch pattern as bulk_trash, but for arbitrary label ops. Use this for archive (remove_labels=['INBOX']), bulk star/unstar, mark-read across a label, moving messages between labels, etc. Use dry_run to see the count first.",
+    inputSchema: { type: "object" as const, properties: {
+      account: { type: "string", description: "Account alias" },
+      query: { type: "string", description: "Search query (Gmail syntax for Gmail accounts, e.g. 'in:inbox older_than:30d')" },
+      folder: { type: "string", description: "Optional folder/label scope. On Gmail becomes a 'label:' prefix; on IMAP/JMAP scopes the search to that mailbox." },
+      add_labels: { type: "array", items: { type: "string" }, description: "Labels to add to each matching message." },
+      remove_labels: { type: "array", items: { type: "string" }, description: "Labels to remove from each matching message. Use ['INBOX'] for archive." },
+      dry_run: { type: "boolean", description: "If true, return the matching count without modifying anything." },
+      max: { type: "number", description: "Safety cap on number of messages to modify. Defaults to no cap." },
+    }, required: ["account", "query"] } },
+  async (args, ctx) => {
+    const add = (args.add_labels as string[]) ?? [];
+    const remove = (args.remove_labels as string[]) ?? [];
+    if (add.length === 0 && remove.length === 0) {
+      return { content: [{ type: "text", text: "Nothing to do — supply add_labels and/or remove_labels." }], isError: true };
+    }
+    const provider = await ctx.getProvider(args.account as string);
+    const ids = await provider.findMessageIds(
+      args.query as string,
+      args.folder as string | undefined,
+      args.max as number | undefined,
+    );
+    if (args.dry_run) {
+      return { content: [{ type: "text", text: `${ids.length} messages match (dry run, nothing modified).` }] };
+    }
+    if (ids.length === 0) {
+      return { content: [{ type: "text", text: "No messages matched the query." }] };
+    }
+    await provider.batchModifyLabels(ids, add, remove);
+    const summary = [add.length ? `added [${add.join(", ")}]` : null, remove.length ? `removed [${remove.join(", ")}]` : null].filter(Boolean).join(" and ");
+    return { content: [{ type: "text", text: `${ids.length} messages updated — ${summary}.` }] };
+  }
+);

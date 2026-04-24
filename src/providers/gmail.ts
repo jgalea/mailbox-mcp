@@ -143,14 +143,24 @@ export class GmailProvider implements MailProvider {
     const q = folder ? `label:${folder} ${query}`.trim() : query;
     const res = await this.gmail.users.messages.list({ userId: "me", q, maxResults });
     const messages = res.data.messages ?? [];
-    const results: EmailSummary[] = [];
-    for (const msg of messages) {
-      const full = await this.gmail.users.messages.get({
-        userId: "me", id: msg.id!, format: "metadata",
-        metadataHeaders: ["From", "To", "Subject", "Date"],
-      });
-      results.push(toSummary(parseMessage(full.data)));
+    // Fetch metadata with bounded concurrency. Sequential per-message gets caused
+    // search_emails to exceed Claude Code's MCP request timeout on large pages
+    // (500 messages × ~50ms = ~25s) and the client closed the transport silently.
+    const CONCURRENCY = 20;
+    const results: EmailSummary[] = new Array(messages.length);
+    let cursor = 0;
+    async function worker(this: GmailProvider) {
+      while (true) {
+        const i = cursor++;
+        if (i >= messages.length) return;
+        const full = await this.gmail.users.messages.get({
+          userId: "me", id: messages[i].id!, format: "metadata",
+          metadataHeaders: ["From", "To", "Subject", "Date"],
+        });
+        results[i] = toSummary(parseMessage(full.data));
+      }
     }
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, messages.length) }, () => worker.call(this)));
     return results;
   }
 

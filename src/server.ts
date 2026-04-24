@@ -156,15 +156,26 @@ server.setRequestHandler(ListToolsRequestSchema, async () => ({
   tools: getAllToolDefinitions(),
 }));
 
+let requestCounter = 0;
+
 server.setRequestHandler(CallToolRequestSchema, async (request) => {
   const { name, arguments: args } = request.params;
+  const reqId = ++requestCounter;
+  const startedAt = Date.now();
+  logEvent("call-start", `req=${reqId} tool=${name}`);
   try {
-    return await handleToolCall(name, (args ?? {}) as Record<string, unknown>, {
+    const result = await handleToolCall(name, (args ?? {}) as Record<string, unknown>, {
       accountManager,
       getProvider,
       clearProviderCache: (alias: string) => { providerCache.delete(alias); },
     });
+    const ms = Date.now() - startedAt;
+    const responseBytes = JSON.stringify(result).length;
+    logEvent("call-end", `req=${reqId} tool=${name} ms=${ms} bytes=${responseBytes}`);
+    return result;
   } catch (err: any) {
+    const ms = Date.now() - startedAt;
+    logEvent("call-error", `req=${reqId} tool=${name} ms=${ms} err=${String(err?.message ?? err)}`);
     // Clear cached provider on auth/connection errors so next call reconnects
     const alias = (args as any)?.account;
     if (alias && isAuthOrConnectionError(err)) {
@@ -221,6 +232,13 @@ async function main() {
   await server.connect(transport);
   logEvent("start", `version=${readPackageVersion()}`);
   console.error("mailbox-mcp server running on stdio");
+
+  // Heartbeat: confirms the process is still alive after a silent client
+  // disconnect. If the log shows heartbeats continuing past a request that the
+  // client saw as "Connection closed", the server survived and the pipe was
+  // torn down by the client (likely a request timeout). Unref so it doesn't
+  // keep the event loop alive on its own.
+  setInterval(() => { logEvent("alive"); }, 60_000).unref();
 }
 
 main().catch((err) => {

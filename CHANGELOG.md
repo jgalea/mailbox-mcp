@@ -1,5 +1,14 @@
 # Changelog
 
+## 0.8.0 — 2026-04-24
+
+### Fixed
+- **Silent disconnect on large `search_emails` pages.** Per-message metadata `get` calls were sequential, so a `max_results=500` page took ~25s and exceeded Claude Code's MCP request timeout. The client closed the transport without notifying the server (no `transport-close`, no `stdin-end`, no signal — the 0.7.0 lifecycle log was therefore silent on the cause). `GmailProvider.searchMessages` now fans the gets out at concurrency 20, cutting a 500-id page from ~25s to ~1.5s.
+
+### Added
+- **`bulk_modify`** — search-and-modify in one call. Same fast `findMessageIds` + `batchModifyLabels` path as `bulk_trash` (introduced in 0.7.0), but for arbitrary label ops. Use `remove_labels=["INBOX"]` for archive, `add_labels=["STARRED"]` for bulk star, etc. Avoids the slow `search_emails` round-trip entirely for these workflows.
+- **Per-request lifecycle logging.** Every tool call now writes `call-start`/`call-end`/`call-error` lines to `~/.mailbox-mcp/debug.log` with request id, tool name, duration in ms, and response size in bytes. Combined with a 60s `alive` heartbeat, future silent disconnects can be diagnosed: a missing `call-end` after `call-start` plus continuing `alive` beats means the request handler hung; a stop in heartbeats means the process actually died.
+
 ## 0.7.0 — 2026-04-24
 
 ### Added
