@@ -1,5 +1,17 @@
 # Changelog
 
+## 0.9.0 — 2026-04-25
+
+### Added
+- **Reversible bulk operations.** `bulk_modify` and `bulk_trash` now write a transaction record (timestamp, account, query, label changes, message ids) to `~/.mailbox-mcp/transactions.jsonl` before returning. Each response includes the `op_id` so the user can reverse immediately if the result was wrong.
+- **`list_recent_bulk_ops`** — paginated list of recorded bulk ops, optionally filtered by account, with reversed-status flags so an op can't be reversed twice.
+- **`undo_bulk_op`** — replays the inverse label change against the exact ids that were touched. Archive (remove INBOX) becomes add INBOX; trash (add TRASH) becomes remove TRASH. Idempotent — refuses to re-reverse an op already marked reversed.
+- `MAILBOX_MCP_LOG_DIR` env var overrides the log directory (used by tests; production uses `~/.mailbox-mcp/`).
+
+### Notes
+- Transactions are not recorded for `dry_run` calls.
+- Log file rotates at 50MB. Records hold full id arrays, so a 2k-id archive op writes ~70KB.
+
 ## 0.8.0 — 2026-04-24
 
 ### Fixed

@@ -1,7 +1,16 @@
-import { describe, it, expect, beforeEach, vi } from "vitest";
+import { describe, it, expect, beforeEach, afterAll, vi } from "vitest";
 import { handleToolCall, sanitizeErrorMessage, type ToolContext } from "../../src/tools/registry.js";
 import type { MailProvider } from "../../src/providers/interface.js";
 import { redactTokens } from "../../src/security/sanitize.js";
+import { mkdtempSync, rmSync, existsSync } from "node:fs";
+import { tmpdir } from "node:os";
+import { join } from "node:path";
+
+// Point the transaction log at a per-test-run temp dir so we never touch
+// the real ~/.mailbox-mcp/transactions.jsonl.
+const TX_TMP = mkdtempSync(join(tmpdir(), "mailbox-mcp-test-"));
+process.env.MAILBOX_MCP_LOG_DIR = TX_TMP;
+
 import "../../src/tools/manage.js";
 
 function createMockProvider(): MailProvider {
@@ -112,6 +121,89 @@ describe("manage tools", () => {
     (mockProvider.findMessageIds as any).mockResolvedValue(["x"]);
     await handleToolCall("bulk_modify", { account: "personal", query: "older_than:90d", folder: "Updates", max: 1000, remove_labels: ["INBOX"] }, ctx);
     expect(mockProvider.findMessageIds).toHaveBeenCalledWith("older_than:90d", "Updates", 1000);
+  });
+});
+
+describe("transaction log and undo", () => {
+  let mockProvider: MailProvider;
+  let ctx: ToolContext;
+
+  beforeEach(() => {
+    // Wipe the temp transaction log between tests for isolation.
+    const txFile = join(TX_TMP, "transactions.jsonl");
+    if (existsSync(txFile)) rmSync(txFile);
+    mockProvider = createMockProvider();
+    ctx = { accountManager: { listAccounts: vi.fn(), getAccount: vi.fn() } as any, getProvider: vi.fn().mockReturnValue(mockProvider) };
+  });
+
+  afterAll(() => {
+    rmSync(TX_TMP, { recursive: true, force: true });
+  });
+
+  it("bulk_modify records a transaction and undo_bulk_op reverses it", async () => {
+    (mockProvider.findMessageIds as any).mockResolvedValue(["m1", "m2", "m3"]);
+    const archive = await handleToolCall("bulk_modify", { account: "personal", query: "in:inbox older_than:30d", remove_labels: ["INBOX"] }, ctx);
+
+    // Op id is included in the response so the user can undo immediately.
+    const opIdMatch = archive.content[0].text.match(/id=([a-f0-9]+)/);
+    expect(opIdMatch).not.toBeNull();
+    const opId = opIdMatch![1];
+
+    // List shows the op.
+    const list = await handleToolCall("list_recent_bulk_ops", { account: "personal" }, ctx);
+    expect(list.content[0].text).toContain(opId);
+    expect(list.content[0].text).toContain("count=3");
+    expect(list.content[0].text).toContain("-[INBOX]");
+
+    // Undo replays the inverse against the exact ids.
+    const undo = await handleToolCall("undo_bulk_op", { op_id: opId }, ctx);
+    expect(undo.content[0].text).toContain("Reversed");
+    expect(mockProvider.batchModifyLabels).toHaveBeenLastCalledWith(["m1", "m2", "m3"], ["INBOX"], []);
+  });
+
+  it("bulk_trash records TRASH as the added label so undo removes it", async () => {
+    (mockProvider.findMessageIds as any).mockResolvedValue(["t1", "t2"]);
+    const trashed = await handleToolCall("bulk_trash", { account: "personal", query: "label:Junk" }, ctx);
+    const opId = trashed.content[0].text.match(/id=([a-f0-9]+)/)![1];
+
+    const undo = await handleToolCall("undo_bulk_op", { op_id: opId }, ctx);
+    expect(undo.content[0].text).toContain("Reversed");
+    // Undo of trash = remove the TRASH label.
+    expect(mockProvider.batchModifyLabels).toHaveBeenLastCalledWith(["t1", "t2"], [], ["TRASH"]);
+  });
+
+  it("undo_bulk_op refuses to re-reverse an already-reversed op", async () => {
+    (mockProvider.findMessageIds as any).mockResolvedValue(["m1"]);
+    const result = await handleToolCall("bulk_modify", { account: "personal", query: "x", remove_labels: ["INBOX"] }, ctx);
+    const opId = result.content[0].text.match(/id=([a-f0-9]+)/)![1];
+
+    await handleToolCall("undo_bulk_op", { op_id: opId }, ctx);
+    const second = await handleToolCall("undo_bulk_op", { op_id: opId }, ctx);
+    expect(second.isError).toBe(true);
+    expect(second.content[0].text).toContain("already reversed");
+  });
+
+  it("undo_bulk_op returns an error for an unknown op id", async () => {
+    const result = await handleToolCall("undo_bulk_op", { op_id: "deadbeef00000000" }, ctx);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("not found");
+  });
+
+  it("list_recent_bulk_ops filters by account", async () => {
+    (mockProvider.findMessageIds as any).mockResolvedValue(["m1"]);
+    await handleToolCall("bulk_modify", { account: "personal", query: "x", remove_labels: ["INBOX"] }, ctx);
+    await handleToolCall("bulk_modify", { account: "work", query: "y", remove_labels: ["INBOX"] }, ctx);
+
+    const personalOnly = await handleToolCall("list_recent_bulk_ops", { account: "personal" }, ctx);
+    expect(personalOnly.content[0].text).toContain("personal bulk_modify");
+    expect(personalOnly.content[0].text).not.toContain("work bulk_modify");
+  });
+
+  it("dry_run does not record a transaction", async () => {
+    (mockProvider.findMessageIds as any).mockResolvedValue(["m1", "m2"]);
+    await handleToolCall("bulk_modify", { account: "personal", query: "x", remove_labels: ["INBOX"], dry_run: true }, ctx);
+    const list = await handleToolCall("list_recent_bulk_ops", {}, ctx);
+    expect(list.content[0].text).toContain("No bulk operations recorded yet.");
   });
 });
 
