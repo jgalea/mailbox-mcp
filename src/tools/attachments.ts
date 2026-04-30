@@ -13,7 +13,7 @@ registerTool(
       properties: {
         account: { type: "string", description: "Account alias" },
         message_id: { type: "string", description: "Message ID" },
-        attachment_id: { type: "string", description: "Attachment ID from read_email" },
+        attachment_id: { type: "string", description: "Attachment filename (recommended — stable) or ID from read_email (Gmail IDs are ephemeral)" },
         save_to: { type: "string", description: `Directory to save to (default ~/Downloads/mailbox-mcp). Allowed: ~/Downloads/mailbox-mcp or /tmp.` },
       },
       required: ["account", "message_id", "attachment_id"],

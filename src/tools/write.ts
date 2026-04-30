@@ -72,6 +72,8 @@ registerTool(
         message_id: { type: "string", description: "Message ID to reply to" },
         body: { type: "string", description: "Reply body" },
         reply_all: { type: "boolean", description: "Reply to all recipients (default false)" },
+        cc: { type: "array", items: { type: "string" }, description: "Additional CC recipients" },
+        bcc: { type: "array", items: { type: "string" }, description: "Additional BCC recipients" },
         html: { type: "boolean", description: "Send as HTML (default false)" },
         attachments: attachmentsSchema,
       },
@@ -84,7 +86,10 @@ registerTool(
     const attachments = loadAttachments(args.attachments as string[] | undefined);
     const provider = await ctx.getProvider(args.account as string);
     const id = await provider.replyToMessage(args.message_id as string, args.body as string, {
-      replyAll: args.reply_all as boolean | undefined, html: args.html as boolean | undefined,
+      replyAll: args.reply_all as boolean | undefined,
+      cc: args.cc as string[] | undefined,
+      bcc: args.bcc as string[] | undefined,
+      html: args.html as boolean | undefined,
       attachments,
     });
     return { content: [{ type: "text", text: `Reply sent. Message ID: ${id}` }] };

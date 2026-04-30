@@ -237,6 +237,8 @@ export class GmailProvider implements MailProvider {
     const reSubject = ensureReplyPrefix(subject);
     const encodeOpts: GmailEncodeOptions = {
       html: options?.html,
+      cc: options?.cc,
+      bcc: options?.bcc,
       inReplyTo: msgId,
       references: msgId,
       attachments: options?.attachments,
@@ -352,11 +354,17 @@ export class GmailProvider implements MailProvider {
   }
 
   async downloadAttachment(messageId: string, attachmentId: string): Promise<{ filename: string; data: Buffer; mimeType: string }> {
+    // Gmail attachment IDs are ephemeral — they rotate between API calls. We re-fetch
+    // the message and resolve by current ID OR filename (filenames are stable). Callers
+    // can therefore pass either the ID from read_email OR the filename.
     const msg = await this.gmail.users.messages.get({ userId: "me", id: messageId, format: "full" });
     const attachments = extractAttachments(msg.data.payload!);
-    const info = attachments.find((a) => a.id === attachmentId);
-    if (!info) throw new Error(`Attachment ${attachmentId} not found`);
-    const res = await this.gmail.users.messages.attachments.get({ userId: "me", messageId, id: attachmentId });
+    const info = attachments.find((a) => a.id === attachmentId || a.filename === attachmentId);
+    if (!info) {
+      const available = attachments.map((a) => a.filename).join(", ") || "(none)";
+      throw new Error(`Attachment "${attachmentId}" not found. Available filenames: ${available}`);
+    }
+    const res = await this.gmail.users.messages.attachments.get({ userId: "me", messageId, id: info.id });
     return { filename: info.filename, data: Buffer.from(res.data.data!, "base64url"), mimeType: info.mimeType };
   }
 

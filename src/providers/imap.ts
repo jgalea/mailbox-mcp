@@ -261,7 +261,7 @@ export class ImapProvider implements MailProvider {
     const to = [replyAddress];
     if (options?.replyAll) { to.push(...original.to, ...original.cc); }
     const subject = ensureReplyPrefix(original.subject);
-    return this.sendMessage(to, subject, body, { html: options?.html, attachments: options?.attachments });
+    return this.sendMessage(to, subject, body, { cc: options?.cc, bcc: options?.bcc, html: options?.html, attachments: options?.attachments });
   }
 
   async forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string> {

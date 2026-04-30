@@ -75,6 +75,8 @@ export interface SendOptions {
 
 export interface ReplyOptions {
   replyAll?: boolean;
+  cc?: string[];
+  bcc?: string[];
   html?: boolean;
   attachments?: Attachment[];
 }
