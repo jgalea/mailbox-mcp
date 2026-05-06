@@ -494,19 +494,30 @@ export class ImapProvider implements MailProvider {
   }
 
   async countUnreadByLabel(): Promise<UnreadCount[]> {
-    const folders = await this.imap.list();
-    const counts: UnreadCount[] = [];
-    for (const f of folders as any[]) {
-      if (f.flags?.has?.("\\Noselect")) continue;
-      try {
-        const status = await (this.imap as any).status(f.path, { unseen: true });
-        const unseen = status?.unseen ?? 0;
-        if (unseen > 0) counts.push({ labelId: f.path, name: f.path, unread: unseen });
-      } catch {
-        // skip folders we can't STATUS
+    const folders = ((await this.imap.list()) as any[])
+      .filter((f) => !f.flags?.has?.("\\Noselect"));
+    // Sequential STATUS round-trips on accounts with many folders pushed this past
+    // MCP timeouts. IMAP servers tolerate small concurrency for STATUS commands.
+    const CONCURRENCY = 8;
+    const results: (UnreadCount | null)[] = new Array(folders.length).fill(null);
+    let cursor = 0;
+    const self = this;
+    async function worker() {
+      while (true) {
+        const i = cursor++;
+        if (i >= folders.length) return;
+        const f = folders[i];
+        try {
+          const status = await (self.imap as any).status(f.path, { unseen: true });
+          const unseen = status?.unseen ?? 0;
+          if (unseen > 0) results[i] = { labelId: f.path, name: f.path, unread: unseen };
+        } catch {
+          // skip folders we can't STATUS
+        }
       }
     }
-    return counts.sort((a, b) => b.unread - a.unread);
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, folders.length) }, () => worker()));
+    return (results.filter(Boolean) as UnreadCount[]).sort((a, b) => b.unread - a.unread);
   }
 
   async exportMessage(messageId: string): Promise<ExportedMessage> {

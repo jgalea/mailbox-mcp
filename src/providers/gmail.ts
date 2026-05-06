@@ -427,15 +427,26 @@ export class GmailProvider implements MailProvider {
   async countUnreadByLabel(): Promise<UnreadCount[]> {
     const list = await this.gmail.users.labels.list({ userId: "me" });
     const labels = (list.data.labels ?? []) as any[];
-    const counts: UnreadCount[] = [];
-    for (const l of labels) {
-      const detail = await this.gmail.users.labels.get({ userId: "me", id: l.id });
-      const unread = detail.data.messagesUnread ?? 0;
-      if (unread > 0) {
-        counts.push({ labelId: l.id, name: l.name, unread });
+    // Sequential per-label gets caused this tool to take 20-80s on accounts with
+    // many labels and exceed the MCP request timeout (silent client disconnect).
+    // Same fan-out pattern as searchMessages.
+    const CONCURRENCY = 20;
+    const results: (UnreadCount | null)[] = new Array(labels.length).fill(null);
+    let cursor = 0;
+    const self = this;
+    async function worker() {
+      while (true) {
+        const i = cursor++;
+        if (i >= labels.length) return;
+        const detail = await self.gmail.users.labels.get({ userId: "me", id: labels[i].id });
+        const unread = detail.data.messagesUnread ?? 0;
+        if (unread > 0) {
+          results[i] = { labelId: labels[i].id, name: labels[i].name, unread };
+        }
       }
     }
-    return counts.sort((a, b) => b.unread - a.unread);
+    await Promise.all(Array.from({ length: Math.min(CONCURRENCY, labels.length) }, () => worker()));
+    return (results.filter(Boolean) as UnreadCount[]).sort((a, b) => b.unread - a.unread);
   }
 
   async exportMessage(messageId: string): Promise<ExportedMessage> {

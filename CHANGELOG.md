@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.9.1 — 2026-05-06
+
+### Fixed
+- **Silent disconnect on `count_unread_by_label`.** Same anti-pattern as the 0.8.0 `searchMessages` fix: per-label `labels.get` calls were sequential, so accounts with many labels (50-100+) took 17-82s and exceeded Claude Code's MCP request timeout. The client tore down the transport without leaving a transport-close / stdin-end / signal in the lifecycle log. `GmailProvider.countUnreadByLabel` now fans out at concurrency 20; `ImapProvider.countUnreadByLabel` at concurrency 8 (more conservative for IMAP `STATUS` round-trips). JMAP was already a single batch call and unaffected.
+
 ## 0.9.0 — 2026-04-25
 
 ### Added

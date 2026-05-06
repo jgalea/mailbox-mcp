@@ -14,7 +14,7 @@ function createMockGmail() {
         attachments: { get: vi.fn() },
       },
       threads: { get: vi.fn() },
-      labels: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
+      labels: { list: vi.fn(), get: vi.fn(), create: vi.fn(), delete: vi.fn() },
       drafts: { create: vi.fn() },
       settings: {
         filters: { list: vi.fn(), create: vi.fn(), delete: vi.fn() },
@@ -266,5 +266,31 @@ describe("GmailProvider", () => {
     expect(labels).toHaveLength(2);
     expect(labels[0]).toEqual({ id: "INBOX", name: "INBOX", type: "system" });
     expect(labels[1]).toEqual({ id: "Label_1", name: "Work", type: "user" });
+  });
+
+  it("countUnreadByLabel fans out label.get in parallel and skips zero-unread labels", async () => {
+    const labelDefs = [
+      { id: "INBOX",   name: "INBOX",    unread: 4,  delay: 30 },
+      { id: "Label_1", name: "Work",     unread: 0,  delay: 5  },
+      { id: "Label_2", name: "Personal", unread: 12, delay: 0  },
+      { id: "Label_3", name: "Promos",   unread: 1,  delay: 20 },
+      { id: "Label_4", name: "Old",      unread: 0,  delay: 10 },
+    ];
+    mockGmail.users.labels.list.mockResolvedValue({
+      data: { labels: labelDefs.map(({ id, name }) => ({ id, name })) },
+    });
+    mockGmail.users.labels.get.mockImplementation(async ({ id }: { id: string }) => {
+      const def = labelDefs.find((l) => l.id === id)!;
+      await new Promise((r) => setTimeout(r, def.delay));
+      return { data: { messagesUnread: def.unread } };
+    });
+
+    const counts = await provider.countUnreadByLabel();
+    expect(counts).toEqual([
+      { labelId: "Label_2", name: "Personal", unread: 12 },
+      { labelId: "INBOX",   name: "INBOX",    unread: 4 },
+      { labelId: "Label_3", name: "Promos",   unread: 1 },
+    ]);
+    expect(mockGmail.users.labels.get).toHaveBeenCalledTimes(5);
   });
 });
