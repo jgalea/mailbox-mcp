@@ -219,25 +219,37 @@ for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGPIPE"] as const) {
 }
 process.on("exit", (code) => { logEvent("exit", `code=${code}`); });
 
-// stdin EOF is how Claude Code tells the server "you're done". Log it so we
-// can distinguish a clean client disconnect from a crash.
-process.stdin.on("end", () => { logEvent("stdin-end"); });
-process.stdin.on("error", (err) => { logEvent("stdin-error", String(err)); });
-process.stdout.on("error", (err) => { logEvent("stdout-error", String(err)); });
+// When Claude Code closes the stdio pipe (parent restart, session compaction,
+// subagent spawn invalidating the registration, etc.) we exit cleanly instead
+// of staying alive as a zombie. Otherwise: orphan processes accumulate, the
+// next /mcp reconnect spawns yet another, and the user has to hunt them down
+// with pkill. A clean exit is the right behaviour — Claude Code re-spawns us
+// on demand when a tool is called next.
+function shutdownClean(reason: string): void {
+  logEvent("shutdown", reason);
+  // Tiny drain delay so any in-flight response has a chance to flush.
+  setTimeout(() => process.exit(0), 50);
+}
+process.stdin.on("end", () => shutdownClean("stdin-end"));
+process.stdin.on("close", () => shutdownClean("stdin-close"));
+process.stdin.on("error", (err) => shutdownClean(`stdin-error: ${String(err)}`));
+process.stdout.on("error", (err) => shutdownClean(`stdout-error: ${String(err)}`));
 
 async function main() {
   const transport = new StdioServerTransport();
-  transport.onclose = () => { logEvent("transport-close"); };
+  transport.onclose = () => shutdownClean("transport-close");
   transport.onerror = (err: unknown) => { logEvent("transport-error", String(err)); };
   await server.connect(transport);
   logEvent("start", `version=${readPackageVersion()}`);
   console.error("mailbox-mcp server running on stdio");
 
-  // Heartbeat: confirms the process is still alive after a silent client
-  // disconnect. If the log shows heartbeats continuing past a request that the
-  // client saw as "Connection closed", the server survived and the pipe was
-  // torn down by the client (likely a request timeout). Unref so it doesn't
-  // keep the event loop alive on its own.
+  // Heartbeat: low-rate alive marker so the debug log shows the process is
+  // surviving. Useful when triaging "did Claude Code drop the pipe, or did
+  // we crash?" — heartbeats continuing past a missing call mean the server
+  // survived and the client tore down. Now also a sanity check that the
+  // shutdown handlers above actually fire when the pipe closes (heartbeats
+  // should STOP within a minute of disconnect; if they continue, that's a
+  // bug). Unref'd so it can't keep the event loop alive on its own.
   setInterval(() => { logEvent("alive"); }, 60_000).unref();
 }
 
