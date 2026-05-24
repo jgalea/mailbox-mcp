@@ -213,7 +213,7 @@ export class ImapProvider implements MailProvider {
 
       const messages = await this.imap.fetchAll(uids, {
         envelope: true, flags: true, bodyStructure: true, uid: true,
-      });
+      }, { uid: true });
 
       return messages.map((msg: any) => ({
         id: `${folder}:${msg.uid}`,
@@ -236,7 +236,14 @@ export class ImapProvider implements MailProvider {
   }
 
   private async searchByText(query: string, maxResults: number): Promise<number[]> {
-    const searchResult = await this.imap.search({ or: [{ subject: query }, { body: query }] });
+    // imapflow's search() returns sequence numbers without { uid: true }.
+    // Without this, the downstream fetchAll treats the seq nums as UIDs and
+    // either fetches the wrong rows or returns empty results on a mailbox
+    // with expunged messages.
+    const searchResult = await this.imap.search(
+      { or: [{ subject: query }, { body: query }] },
+      { uid: true },
+    );
     const uids = searchResult || [];
     return uids.slice(-maxResults).reverse();
   }
@@ -442,7 +449,14 @@ export class ImapProvider implements MailProvider {
     try {
       const status = (this.imap as any).mailbox;
       const total = status?.exists ?? 0;
-      const unread = status?.unseen ?? 0;
+      // mailbox.unseen is populated by imapflow at SELECT time and never
+      // refreshed — marking messages read/unread, IDLE updates, and concurrent
+      // changes from other clients don't touch it. Count fresh via SEARCH
+      // against the locked mailbox instead. (Using SEARCH rather than STATUS
+      // because RFC 3501 §6.3.10 says STATUS SHOULD NOT be used on the
+      // currently-selected mailbox, and we're already inside a lock here.)
+      const unseenUids = (await this.imap.search({ seen: false }, { uid: true })) || [];
+      const unread = unseenUids.length;
       const uids = await this.listRecentUids(5);
       if (uids.length === 0) return { total, unread, recent: [] };
 
@@ -603,12 +617,15 @@ export class ImapProvider implements MailProvider {
     if (Number.isNaN(date.getTime())) throw new Error(`Invalid since timestamp: ${since}`);
     const lock = await this.imap.getMailboxLock(folder);
     try {
-      const uids = (await this.imap.search({ since: date })) || [];
+      // Same UID/seq mismatch as searchByText: search() returns seq nums by
+      // default, fetchAll then treats them as UIDs. Pass { uid: true } at
+      // both call sites so the pipeline is UID-based end to end.
+      const uids = (await this.imap.search({ since: date }, { uid: true })) || [];
       const limited = uids.slice(-maxResults).reverse();
       if (limited.length === 0) return [];
       const messages = await this.imap.fetchAll(limited, {
         envelope: true, flags: true, bodyStructure: true, uid: true,
-      });
+      }, { uid: true });
       return messages.map((msg: any) => ({
         id: `${folder}:${msg.uid}`,
         from: formatAddress(msg.envelope?.from?.[0]),
