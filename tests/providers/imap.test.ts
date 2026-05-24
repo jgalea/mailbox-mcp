@@ -246,6 +246,13 @@ describe("ImapProvider", () => {
     await provider.searchMessages("", 5);
     expect(mockImap.search).not.toHaveBeenCalled();
     expect(mockImap.fetch).toHaveBeenCalled();
+    // The fetchAll downstream must also use { uid: true } so the UIDs from
+    // listRecentUids aren't reinterpreted as sequence numbers.
+    expect(mockImap.fetchAll).toHaveBeenCalledWith(
+      expect.any(Array),
+      expect.any(Object),
+      { uid: true }
+    );
   });
 
   it("searchMessages returns ids in folder:uid form", async () => {
@@ -255,6 +262,102 @@ describe("ImapProvider", () => {
     ]);
     const results = await provider.searchMessages("x");
     expect(results[0].id).toBe("INBOX:7");
+  });
+
+  it("searchMessages asks the server for UIDs, not sequence numbers", async () => {
+    // imapflow's search() returns seq nums without { uid: true }. Without this,
+    // the seq nums flow into fetchAll and either fetch the wrong rows or
+    // return empty results on a mailbox with expunged messages.
+    mockImap.search.mockResolvedValue([42]);
+    mockImap.fetchAll.mockResolvedValue([
+      { uid: 42, envelope: { from: [{ address: "a@x" }], to: [], subject: "x", date: new Date(0) }, bodyStructure: { childNodes: [] } },
+    ]);
+    await provider.searchMessages("hello", 10);
+    expect(mockImap.search).toHaveBeenCalledWith(
+      { or: [{ subject: "hello" }, { body: "hello" }] },
+      { uid: true }
+    );
+    // And the fetchAll must also pass { uid: true } as its third options arg
+    // so the returned UIDs aren't reinterpreted as sequence numbers.
+    expect(mockImap.fetchAll).toHaveBeenCalledWith(
+      [42],
+      expect.objectContaining({ envelope: true, uid: true }),
+      { uid: true }
+    );
+  });
+
+  it("inboxSummary returns fresh unread count from server, not cached mailbox.unseen", async () => {
+    // mailbox.unseen is populated by imapflow at SELECT time and never
+    // refreshed. Marking messages read/unread, IDLE updates, and concurrent
+    // changes from other clients don't touch it — the cached value can be
+    // arbitrarily stale. We need to ask the server for a fresh count.
+    mockImap.mailbox.exists = 100;
+    mockImap.mailbox.unseen = 999; // stale — should be ignored
+    mockImap.search.mockResolvedValue([10, 11, 12, 13]); // 4 unseen now
+    mockImap.fetch.mockImplementation(async function* () {
+      yield { uid: 98 };
+      yield { uid: 99 };
+      yield { uid: 100 };
+    });
+    mockImap.fetchAll.mockResolvedValue([]);
+
+    const result = await provider.inboxSummary();
+    expect(result.unread).toBe(4);
+    expect(result.total).toBe(100);
+    expect(mockImap.search).toHaveBeenCalledWith({ seen: false }, { uid: true });
+  });
+
+  it("inboxSummary reports zero unread when search returns empty array", async () => {
+    mockImap.mailbox.exists = 50;
+    mockImap.mailbox.unseen = 5;
+    mockImap.search.mockResolvedValue([]);
+    mockImap.fetch.mockImplementation(async function* () {});
+    mockImap.fetchAll.mockResolvedValue([]);
+
+    const result = await provider.inboxSummary();
+    expect(result.unread).toBe(0);
+  });
+
+  it("inboxSummary tolerates search returning false (some imapflow paths)", async () => {
+    mockImap.mailbox.exists = 50;
+    mockImap.search.mockResolvedValue(false);
+    mockImap.fetch.mockImplementation(async function* () {});
+    mockImap.fetchAll.mockResolvedValue([]);
+
+    const result = await provider.inboxSummary();
+    expect(result.unread).toBe(0);
+  });
+
+  it("messagesSince asks the server for UIDs, not sequence numbers", async () => {
+    // Same UID/seq mismatch as searchByText: search() without { uid: true }
+    // returns seq nums, fetchAll then treats them as UIDs. Both call sites
+    // need { uid: true } so the pipeline is UID-based end to end.
+    const since = "2026-05-01T00:00:00Z";
+    mockImap.search.mockResolvedValue([17, 23]);
+    mockImap.fetchAll.mockResolvedValue([
+      { uid: 23, envelope: { from: [{ address: "a@x" }], to: [], subject: "x", date: new Date(0) }, bodyStructure: { childNodes: [] } },
+      { uid: 17, envelope: { from: [{ address: "b@x" }], to: [], subject: "y", date: new Date(0) }, bodyStructure: { childNodes: [] } },
+    ]);
+
+    const results = await provider.messagesSince(since);
+    expect(mockImap.search).toHaveBeenCalledWith(
+      { since: expect.any(Date) },
+      { uid: true }
+    );
+    expect(mockImap.fetchAll).toHaveBeenCalledWith(
+      [23, 17],
+      expect.objectContaining({ envelope: true, uid: true }),
+      { uid: true }
+    );
+    expect(results).toHaveLength(2);
+    expect(results[0].id).toBe("INBOX:23");
+  });
+
+  it("messagesSince returns empty array and skips fetchAll when search has no hits", async () => {
+    mockImap.search.mockResolvedValue([]);
+    const results = await provider.messagesSince("2026-05-01T00:00:00Z");
+    expect(results).toEqual([]);
+    expect(mockImap.fetchAll).not.toHaveBeenCalled();
   });
 
   it("markRead passes uid:true so flag operations target the right message", async () => {
