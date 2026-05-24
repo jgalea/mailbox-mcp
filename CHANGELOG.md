@@ -1,5 +1,14 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **IMAP `messageId` operations targeted the wrong message on mailboxes with expunged history.** `messageMove`, `messageFlagsAdd`, `messageFlagsRemove`, and `fetchOne` were called without the `{ uid: true }` options argument, so imapflow treated the stored UID as a sequence number. The two `uid` flags in imapflow are distinct: the one inside the *query object* (e.g. `{ envelope: true, uid: true }`) asks the response to include the UID; the one inside the *options object* (3rd arg) tells imapflow to treat the input range as a UID. We had the first but not the second. Affected `read_email`, `modify_email`, `mark_read`, `star_email`, `archive_email`, `trash_emails`, `download_attachment`, `send_draft`, `export_email`, `inbox_summary`, and `list_drafts`. (Originally reported in #2 by @benv666.)
+- **`modify_email` rejected the cross-provider label vocabulary on IMAP.** `UNREAD` and `STARRED` are the names Gmail (and the generic `MailProvider` callers) use; on IMAP they map to `\Seen` (inverted) and `\Flagged`. Previously `assertFlagName` threw on anything outside the system-flag set, so `modify_email({add_labels:["UNREAD"]})` or `markRead(false)` against the abstract provider failed. New `resolveImapFlags` helper translates `UNREAD` (with inversion against `\Seen`) and `STARRED` (→ `\Flagged`), and canonicalises standard flags to title case (`\Flagged`, `\Seen`, …). (Originally reported in #4 by @benv666.)
+
+### Changed
+- **IMAP `modify_email` passes unknown labels through as IMAP keywords** instead of throwing. RFC 3501 §2.3.2 explicitly permits server- and user-defined keywords alongside system flags, and imapflow forwards them. This makes the IMAP provider useful for workflows depending on custom keywords (`$Junk`, `NonJunk`, project tags) and matches the cross-provider abstraction's pass-through behaviour for other providers. Callers that relied on the old throw-on-unknown for input validation should validate their label names before calling.
+
 ## 0.9.1 — 2026-05-06
 
 ### Fixed

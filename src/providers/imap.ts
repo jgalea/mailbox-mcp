@@ -42,19 +42,82 @@ function parseImapMessageId(raw: string): ImapMessageId {
   return { folder: "INBOX", uid };
 }
 
-/** RFC 3501 system flags — case-insensitive. */
-const IMAP_SYSTEM_FLAGS = new Set(
-  ["\\Seen", "\\Answered", "\\Flagged", "\\Deleted", "\\Draft", "\\Recent"].map(f => f.toLowerCase())
-);
+/**
+ * Canonical RFC 3501 system flags. Servers treat flag names case-insensitively
+ * but we emit title case for readability and consistency.
+ */
+const IMAP_SYSTEM_FLAGS: Record<string, string> = {
+  seen: "\\Seen",
+  answered: "\\Answered",
+  flagged: "\\Flagged",
+  deleted: "\\Deleted",
+  draft: "\\Draft",
+  recent: "\\Recent",
+};
 
-function assertFlagName(name: string): string {
-  const normalized = name.startsWith("\\") ? name : `\\${name}`;
-  if (!IMAP_SYSTEM_FLAGS.has(normalized.toLowerCase())) {
-    throw new Error(
-      `IMAP accounts use flags, not labels. "${name}" is not a recognized IMAP flag. Valid flags: Seen, Answered, Flagged, Deleted, Draft.`
-    );
+/**
+ * Cross-provider label vocabulary used by Gmail (`UNREAD`, `STARRED`, etc.)
+ * needs to map onto IMAP flags so `modify_email` works the same way across
+ * providers. `UNREAD` is the logical inverse of `\Seen` — adding UNREAD means
+ * *removing* \Seen and vice versa — so callers of `resolveImapFlags` must
+ * cross inverted entries to the opposite operation.
+ */
+interface ResolvedFlag {
+  flag: string;
+  /** When true, the caller should apply this flag to the opposite operation. */
+  invert: boolean;
+}
+
+function resolveImapFlag(name: string): ResolvedFlag {
+  const trimmed = name.trim();
+  if (!trimmed) {
+    throw new Error("Empty flag name");
   }
-  return normalized;
+
+  // UNREAD is the inverse of \Seen — see RFC 3501 §2.3.2.
+  if (trimmed.toLowerCase() === "unread") {
+    return { flag: "\\Seen", invert: true };
+  }
+  // STARRED is Gmail's vocabulary for what IMAP calls \Flagged. Mapping here
+  // keeps cross-provider callers (markRead/starMessage on a generic provider)
+  // working against IMAP without changing their inputs.
+  if (trimmed.toLowerCase() === "starred") {
+    return { flag: "\\Flagged", invert: false };
+  }
+
+  // Strip a leading \ so callers can pass either "Seen" or "\Seen".
+  const bare = trimmed.startsWith("\\") ? trimmed.slice(1) : trimmed;
+  const canonical = IMAP_SYSTEM_FLAGS[bare.toLowerCase()];
+  if (canonical) {
+    return { flag: canonical, invert: false };
+  }
+
+  // Unknown names pass through as IMAP keywords. RFC 3501 §2.3.2 explicitly
+  // permits server-defined and user-defined keywords alongside system flags,
+  // and imapflow forwards them to the server. This is a deliberate change
+  // from the previous behaviour (throw on anything not in the system-flag
+  // set) — it makes the IMAP provider useful for workflows that depend on
+  // custom keywords (e.g. `$Junk`, `NonJunk`, project-specific tags).
+  return { flag: trimmed, invert: false };
+}
+
+/**
+ * Resolve `add` and `remove` arrays into the actual `addFlags` / `removeFlags`
+ * lists to send to imapflow, with inverted entries (UNREAD) crossed to the
+ * opposite operation.
+ */
+function resolveImapFlags(add: string[], remove: string[]): { addFlags: string[]; removeFlags: string[] } {
+  const addFlags: string[] = [];
+  const removeFlags: string[] = [];
+  for (const name of add) {
+    const r = resolveImapFlag(name);
+    (r.invert ? removeFlags : addFlags).push(r.flag);
+  }
+  for (const name of remove) {
+    const r = resolveImapFlag(name);
+    (r.invert ? addFlags : removeFlags).push(r.flag);
+  }
+  return { addFlags, removeFlags };
 }
 
 /** Locate a body-structure node by its IMAP part path. */
@@ -201,7 +264,7 @@ export class ImapProvider implements MailProvider {
     try {
       const meta = await this.imap.fetchOne(uid, {
         envelope: true, flags: true, bodyStructure: true, uid: true,
-      });
+      }, { uid: true });
       if (!meta) throw new Error(`Message ${messageId} not found`);
 
       const textPart = findReadableTextPart(meta.bodyStructure);
@@ -306,7 +369,7 @@ export class ImapProvider implements MailProvider {
       const lock = await this.imap.getMailboxLock(folder);
       try {
         for (const uid of uids) {
-          await this.imap.messageMove(uid, trashFolder);
+          await this.imap.messageMove(uid, trashFolder, { uid: true });
         }
       } finally {
         lock.release();
@@ -333,12 +396,11 @@ export class ImapProvider implements MailProvider {
 
   async modifyLabels(messageId: string, add: string[], remove: string[]): Promise<void> {
     const { folder, uid } = parseImapMessageId(messageId);
-    const addFlags = add.map(assertFlagName);
-    const removeFlags = remove.map(assertFlagName);
+    const { addFlags, removeFlags } = resolveImapFlags(add, remove);
     const lock = await this.imap.getMailboxLock(folder);
     try {
-      if (addFlags.length) await this.imap.messageFlagsAdd(uid, addFlags);
-      if (removeFlags.length) await this.imap.messageFlagsRemove(uid, removeFlags);
+      if (addFlags.length) await this.imap.messageFlagsAdd(uid, addFlags, { uid: true });
+      if (removeFlags.length) await this.imap.messageFlagsRemove(uid, removeFlags, { uid: true });
     } finally {
       lock.release();
     }
@@ -354,7 +416,7 @@ export class ImapProvider implements MailProvider {
     const { folder, uid } = parseImapMessageId(messageId);
     const lock = await this.imap.getMailboxLock(folder);
     try {
-      const meta = await this.imap.fetchOne(uid, { bodyStructure: true, uid: true });
+      const meta = await this.imap.fetchOne(uid, { bodyStructure: true, uid: true }, { uid: true });
       if (!meta) throw new Error(`Message ${messageId} not found`);
       const node = findBodyNode(meta.bodyStructure, attachmentId);
       if (!node) throw new Error(`Attachment ${attachmentId} not found`);
@@ -386,7 +448,7 @@ export class ImapProvider implements MailProvider {
 
       const messages = await this.imap.fetchAll(uids, {
         envelope: true, flags: true, bodyStructure: true, uid: true,
-      });
+      }, { uid: true });
       const recent: EmailSummary[] = messages.map((msg: any) => ({
         id: `INBOX:${msg.uid}`,
         from: formatAddress(msg.envelope?.from?.[0]),
@@ -407,8 +469,8 @@ export class ImapProvider implements MailProvider {
     const { folder, uid } = parseImapMessageId(messageId);
     const lock = await this.imap.getMailboxLock(folder);
     try {
-      if (read) await this.imap.messageFlagsAdd(uid, ["\\Seen"]);
-      else await this.imap.messageFlagsRemove(uid, ["\\Seen"]);
+      if (read) await this.imap.messageFlagsAdd(uid, ["\\Seen"], { uid: true });
+      else await this.imap.messageFlagsRemove(uid, ["\\Seen"], { uid: true });
     } finally {
       lock.release();
     }
@@ -418,8 +480,8 @@ export class ImapProvider implements MailProvider {
     const { folder, uid } = parseImapMessageId(messageId);
     const lock = await this.imap.getMailboxLock(folder);
     try {
-      if (starred) await this.imap.messageFlagsAdd(uid, ["\\Flagged"]);
-      else await this.imap.messageFlagsRemove(uid, ["\\Flagged"]);
+      if (starred) await this.imap.messageFlagsAdd(uid, ["\\Flagged"], { uid: true });
+      else await this.imap.messageFlagsRemove(uid, ["\\Flagged"], { uid: true });
     } finally {
       lock.release();
     }
@@ -430,7 +492,7 @@ export class ImapProvider implements MailProvider {
     const archive = await this.findSpecialFolder("\\Archive");
     const lock = await this.imap.getMailboxLock(folder);
     try {
-      await this.imap.messageMove(uid, archive);
+      await this.imap.messageMove(uid, archive, { uid: true });
     } finally {
       lock.release();
     }
@@ -444,7 +506,7 @@ export class ImapProvider implements MailProvider {
       if (uids.length === 0) return [];
       const messages = await this.imap.fetchAll(uids, {
         envelope: true, uid: true, internalDate: true,
-      });
+      }, { uid: true });
       return messages.map((msg: any) => ({
         id: `${drafts}:${msg.uid}`,
         subject: msg.envelope?.subject ?? "",
@@ -463,7 +525,7 @@ export class ImapProvider implements MailProvider {
     let rawSource: Buffer;
     let envelope: any;
     try {
-      const msg: any = await this.imap.fetchOne(uid, { source: true, envelope: true, uid: true });
+      const msg: any = await this.imap.fetchOne(uid, { source: true, envelope: true, uid: true }, { uid: true });
       if (!msg || !msg.source) throw new Error(`Draft ${draftId} not found`);
       rawSource = msg.source;
       envelope = msg.envelope;
@@ -524,7 +586,7 @@ export class ImapProvider implements MailProvider {
     const { folder, uid } = parseImapMessageId(messageId);
     const lock = await this.imap.getMailboxLock(folder);
     try {
-      const msg: any = await this.imap.fetchOne(uid, { source: true, uid: true });
+      const msg: any = await this.imap.fetchOne(uid, { source: true, uid: true }, { uid: true });
       if (!msg || !msg.source) throw new Error(`Message ${messageId} not found`);
       return {
         filename: `${uid}.eml`,
