@@ -121,11 +121,19 @@ function resolveImapFlags(add: string[], remove: string[]): { addFlags: string[]
 }
 
 /** Locate a body-structure node by its IMAP part path. */
-function findBodyNode(bodyStructure: any, partPath: string): any | undefined {
+/**
+ * Locate a bodyStructure node by its IMAP part path (e.g. "2") OR by its
+ * attachment filename. read_email surfaces attachments as "<filename> (<part>)",
+ * and the download_attachment tool documents the filename as the recommended,
+ * stable id — so both forms must resolve here.
+ */
+function findBodyNode(bodyStructure: any, partOrName: string): any | undefined {
   if (!bodyStructure) return undefined;
-  if (bodyStructure.part === partPath) return bodyStructure;
+  if (bodyStructure.part === partOrName) return bodyStructure;
+  const name = bodyStructure.dispositionParameters?.filename ?? bodyStructure.parameters?.name;
+  if (name && name === partOrName) return bodyStructure;
   for (const child of bodyStructure.childNodes ?? []) {
-    const hit = findBodyNode(child, partPath);
+    const hit = findBodyNode(child, partOrName);
     if (hit) return hit;
   }
   return undefined;
@@ -428,7 +436,9 @@ export class ImapProvider implements MailProvider {
       const node = findBodyNode(meta.bodyStructure, attachmentId);
       if (!node) throw new Error(`Attachment ${attachmentId} not found`);
 
-      const dl = await this.imap.download(uid, attachmentId, { uid: true });
+      // Always download by the resolved IMAP part path. attachmentId may be a
+      // filename, which imapflow's download() cannot resolve on its own.
+      const dl = await this.imap.download(uid, node.part ?? attachmentId, { uid: true });
       if (!dl?.content) throw new Error(`Attachment ${attachmentId} could not be downloaded`);
       const data = await readStreamToBuffer(dl.content);
 

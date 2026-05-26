@@ -426,4 +426,47 @@ describe("ImapProvider", () => {
     expect(out.mimeType).toBe("application/pdf");
     expect(out.data.toString()).toBe("%PDF-1.4");
   });
+
+  it("downloadAttachment resolves by filename and downloads the matching part", async () => {
+    const { Readable } = await import("node:stream");
+    mockImap.fetchOne.mockResolvedValue({
+      uid: 10,
+      bodyStructure: {
+        childNodes: [
+          { part: "1", type: "text", subtype: "plain" },
+          {
+            part: "2", type: "application", subtype: "pdf",
+            disposition: "attachment",
+            parameters: { name: "1.pdf" },
+            dispositionParameters: { filename: "1.pdf" },
+            size: 4096,
+          },
+        ],
+      },
+    });
+    mockImap.download.mockResolvedValue({
+      meta: { filename: "1.pdf", contentType: "application/pdf" },
+      content: Readable.from([Buffer.from("%PDF-1.4")]),
+    });
+
+    const out = await provider.downloadAttachment("INBOX:10", "1.pdf");
+
+    // Looked up by filename, but fetched by the resolved IMAP part path.
+    expect(mockImap.download).toHaveBeenCalledWith(10, "2", { uid: true });
+    expect(out.filename).toBe("1.pdf");
+    expect(out.data.toString()).toBe("%PDF-1.4");
+  });
+
+  it("downloadAttachment throws when neither part path nor filename matches", async () => {
+    mockImap.fetchOne.mockResolvedValue({
+      uid: 10,
+      bodyStructure: {
+        childNodes: [
+          { part: "2", type: "application", subtype: "pdf", disposition: "attachment", parameters: { name: "1.pdf" } },
+        ],
+      },
+    });
+
+    await expect(provider.downloadAttachment("INBOX:10", "missing.pdf")).rejects.toThrow(/not found/);
+  });
 });
