@@ -142,9 +142,21 @@ function findReadableTextPart(bodyStructure: any): string | undefined {
   return findTextPart(bodyStructure, "text/html");
 }
 
+/**
+ * Content-Type of a bodyStructure node as a lowercase "type/subtype" string.
+ * imapflow (1.x) stores the full MIME type in `node.type` (e.g. "text/plain")
+ * and does NOT set `node.subtype`; older/alternative shapes split the two.
+ * Handle both so part lookup and attachment MIME types work either way.
+ */
+function nodeMimeType(node: any): string {
+  if (!node) return "";
+  if (node.subtype) return `${node.type}/${node.subtype}`.toLowerCase();
+  return (node.type ?? "").toLowerCase();
+}
+
 function findTextPart(node: any, target: string): string | undefined {
   if (!node) return undefined;
-  const mime = node.type && node.subtype ? `${node.type}/${node.subtype}`.toLowerCase() : "";
+  const mime = nodeMimeType(node);
   if (mime === target && node.disposition !== "attachment" && node.part) {
     return node.part;
   }
@@ -437,7 +449,7 @@ export class ImapProvider implements MailProvider {
         ?? node.dispositionParameters?.filename
         ?? `attachment-${attachmentId}`;
       const mimeType = dl.meta?.contentType
-        ?? (node.type && node.subtype ? `${node.type}/${node.subtype}` : "application/octet-stream");
+        ?? (nodeMimeType(node) || "application/octet-stream");
       return { filename, data, mimeType };
     } finally {
       lock.release();
@@ -658,7 +670,7 @@ function extractImapAttachments(bodyStructure: any): AttachmentInfo[] {
     if (node.disposition === "attachment" && node.parameters?.name) {
       attachments.push({
         id: node.part ?? "", filename: node.parameters.name,
-        mimeType: `${node.type}/${node.subtype}`, size: node.size ?? 0,
+        mimeType: nodeMimeType(node) || "application/octet-stream", size: node.size ?? 0,
       });
     }
     if (node.childNodes) { attachments.push(...extractImapAttachments(node)); }

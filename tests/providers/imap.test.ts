@@ -408,7 +408,8 @@ describe("ImapProvider", () => {
       bodyStructure: {
         childNodes: [
           {
-            part: "2", type: "application", subtype: "pdf",
+            // imapflow 1.x stores the full MIME type in `type` (no `subtype`).
+            part: "2", type: "application/pdf",
             disposition: "attachment",
             parameters: { name: "invoice.pdf" },
             size: 4096,
@@ -425,5 +426,47 @@ describe("ImapProvider", () => {
     expect(out.filename).toBe("invoice.pdf");
     expect(out.mimeType).toBe("application/pdf");
     expect(out.data.toString()).toBe("%PDF-1.4");
+  });
+
+  it("downloadAttachment derives mime type from node.type when meta omits contentType", async () => {
+    const { Readable } = await import("node:stream");
+    mockImap.fetchOne.mockResolvedValue({
+      uid: 11,
+      bodyStructure: {
+        childNodes: [
+          // Real imapflow shape: full MIME type in `type`, no `subtype`.
+          { part: "2", type: "image/png", disposition: "attachment", parameters: { name: "logo.png" }, size: 99 },
+        ],
+      },
+    });
+    // meta has no contentType -> must fall back to the node's MIME type.
+    mockImap.download.mockResolvedValue({ meta: { filename: "logo.png" }, content: Readable.from([Buffer.from("PNG")]) });
+
+    const out = await provider.downloadAttachment("INBOX:11", "2");
+    expect(out.mimeType).toBe("image/png");
+  });
+
+  it("readMessage extracts the text/plain part from a multipart/alternative message", async () => {
+    const { Readable } = await import("node:stream");
+    // imapflow bodyStructure for a multipart/alternative message: the full MIME
+    // type lives in `type` (e.g. "text/plain"), there is no `subtype` field.
+    mockImap.fetchOne.mockResolvedValue({
+      uid: 55,
+      envelope: { from: [{ address: "a@x" }], to: [], subject: "s", date: new Date(0) },
+      flags: new Set(),
+      bodyStructure: {
+        type: "multipart/alternative",
+        childNodes: [
+          { part: "1", type: "text/plain" },
+          { part: "2", type: "text/html" },
+        ],
+      },
+    });
+    mockImap.download.mockResolvedValue({ content: Readable.from([Buffer.from("Hello plain body")]) });
+
+    const msg = await provider.readMessage("INBOX:55");
+    expect(msg.body).toBe("Hello plain body");
+    // Must download the text/plain part ("1"), not the html part.
+    expect(mockImap.download).toHaveBeenCalledWith(55, "1", { uid: true });
   });
 });
