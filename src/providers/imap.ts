@@ -18,6 +18,19 @@ function formatAddresses(addrs: Array<{ address?: string; name?: string }> | und
   return (addrs ?? []).map(formatAddress).filter(Boolean);
 }
 
+function hasNonAscii(s: string): boolean {
+  for (let i = 0; i < s.length; i++) {
+    if (s.charCodeAt(i) > 127) return true;
+  }
+  return false;
+}
+
+/**
+ * How many recent messages the non-ASCII search fallback scans locally. Bounds
+ * the work for servers that can't do server-side UTF-8 SEARCH (see searchByText).
+ */
+const NON_ASCII_SCAN_LIMIT = 500;
+
 /**
  * IMAP message IDs are scoped to a folder. We encode them as `folder:uid` so
  * downstream tools can move/read messages from the right mailbox. Bare UIDs
@@ -245,7 +258,35 @@ export class ImapProvider implements MailProvider {
       { uid: true },
     );
     const uids = searchResult || [];
+    // imapflow already sends CHARSET UTF-8 for non-ASCII terms, but some IMAP
+    // servers (reproduced on mail.com) still return an empty set for a
+    // non-ASCII SEARCH while Gmail handles it. Fall back to scanning recent
+    // envelopes locally so Cyrillic/etc. search remains usable.
+    if (uids.length === 0 && hasNonAscii(query)) {
+      return this.localEnvelopeSearch(query, maxResults);
+    }
     return uids.slice(-maxResults).reverse();
+  }
+
+  /**
+   * Local substring search over the most recent NON_ASCII_SCAN_LIMIT messages
+   * in the locked mailbox, matching subject and from. Used only as a fallback
+   * for non-ASCII queries the server can't search; bounded to the recent window
+   * rather than the whole mailbox.
+   */
+  private async localEnvelopeSearch(query: string, maxResults: number): Promise<number[]> {
+    const status = (this.imap as any).mailbox;
+    const total = status?.exists ?? 0;
+    if (total === 0) return [];
+    const startSeq = Math.max(1, total - NON_ASCII_SCAN_LIMIT + 1);
+    const needle = query.toLowerCase();
+    const matched: number[] = [];
+    for await (const msg of this.imap.fetch(`${startSeq}:*`, { envelope: true, uid: true })) {
+      const subject = (msg.envelope?.subject ?? "").toLowerCase();
+      const from = formatAddress(msg.envelope?.from?.[0]).toLowerCase();
+      if (subject.includes(needle) || from.includes(needle)) matched.push(msg.uid);
+    }
+    return matched.sort((a, b) => b - a).slice(0, maxResults);
   }
 
   /** Fetch the N most recent UIDs from the currently locked mailbox. */

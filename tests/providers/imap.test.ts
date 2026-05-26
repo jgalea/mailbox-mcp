@@ -255,6 +255,38 @@ describe("ImapProvider", () => {
     );
   });
 
+  it("searchMessages falls back to a local envelope scan when a non-ASCII query returns nothing", async () => {
+    mockImap.search.mockResolvedValue([]); // server can't match the Cyrillic term
+    mockImap.mailbox.exists = 3;
+    mockImap.fetch.mockImplementation(async function* () {
+      yield { uid: 1, envelope: { subject: "Привет мир", from: [{ address: "a@x" }] } };
+      yield { uid: 2, envelope: { subject: "Hello world", from: [{ address: "b@x" }] } };
+      yield { uid: 3, envelope: { subject: "Расчётный период", from: [{ address: "c@x" }] } };
+    });
+    mockImap.fetchAll.mockResolvedValue([
+      { uid: 1, envelope: { from: [{ address: "a@x", name: "A" }], subject: "Привет мир", date: new Date(0), to: [] }, bodyStructure: { childNodes: [] } },
+    ]);
+
+    const results = await provider.searchMessages("привет", 5);
+
+    expect(mockImap.search).toHaveBeenCalled(); // server search tried first
+    expect(mockImap.fetch).toHaveBeenCalled();  // then the local scan ran
+    // Only the message whose subject contains "привет" (case-insensitive) matched.
+    expect(mockImap.fetchAll).toHaveBeenCalledWith([1], expect.any(Object), { uid: true });
+    expect(results).toHaveLength(1);
+  });
+
+  it("searchMessages does not fall back to a local scan for an ASCII query with no results", async () => {
+    mockImap.search.mockResolvedValue([]);
+    mockImap.mailbox.exists = 3;
+    mockImap.fetch.mockImplementation(async function* () { yield { uid: 1, envelope: { subject: "x" } }; });
+
+    const results = await provider.searchMessages("nonexistent", 5);
+
+    expect(results).toEqual([]);
+    expect(mockImap.fetch).not.toHaveBeenCalled();
+  });
+
   it("searchMessages returns ids in folder:uid form", async () => {
     mockImap.search.mockResolvedValue([7]);
     mockImap.fetchAll.mockResolvedValue([
