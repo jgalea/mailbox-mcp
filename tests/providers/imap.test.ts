@@ -426,4 +426,153 @@ describe("ImapProvider", () => {
     expect(out.mimeType).toBe("application/pdf");
     expect(out.data.toString()).toBe("%PDF-1.4");
   });
+
+  // Regression for #14: imapflow stores the full Content-Type in node.type
+  // ("text/plain"), not as separate type+subtype. Verify the body of a
+  // multipart/alternative message is extracted in the real imapflow shape.
+  it("readMessage extracts body from multipart/alternative in real imapflow bodyStructure shape", async () => {
+    const { Readable } = await import("node:stream");
+    mockImap.fetchOne.mockResolvedValue({
+      uid: 42,
+      envelope: {
+        from: [{ address: "sender@example.com", name: "Sender" }],
+        to: [{ address: "me@example.com" }],
+        subject: "Multipart subject",
+        date: new Date("2026-03-27T10:00:00Z"),
+      },
+      flags: new Set(),
+      bodyStructure: {
+        type: "multipart/alternative",
+        childNodes: [
+          { part: "1", type: "text/plain", parameters: { charset: "utf-8" }, size: 12 },
+          { part: "2", type: "text/html", parameters: { charset: "utf-8" }, size: 24 },
+        ],
+      },
+    });
+    mockImap.download.mockImplementation(async (_uid: any, part: string) => {
+      if (part === "1") return { meta: {}, content: Readable.from([Buffer.from("Plain body!")]) };
+      return { meta: {}, content: Readable.from([Buffer.from("<p>html</p>")]) };
+    });
+
+    const out = await provider.readMessage("INBOX:42");
+    expect(out.body).toBe("Plain body!");
+    expect(mockImap.download).toHaveBeenCalledWith(42, "1", expect.objectContaining({ uid: true }));
+  });
+
+  // Regression for #14: attachment MIME type should come from node.type as a full
+  // Content-Type string ("application/pdf"), not "application/pdf/undefined".
+  it("extractImapAttachments uses node.type as the full MIME type (imapflow shape)", async () => {
+    mockImap.fetchOne.mockResolvedValue({
+      uid: 7,
+      envelope: { from: [{ address: "a@x" }], to: [], subject: "with pdf", date: new Date(0) },
+      bodyStructure: {
+        type: "multipart/mixed",
+        childNodes: [
+          { part: "1", type: "text/plain", parameters: { charset: "utf-8" } },
+          {
+            part: "2", type: "application/pdf",
+            disposition: "attachment",
+            dispositionParameters: { filename: "1.pdf" },
+            size: 4096,
+          },
+        ],
+      },
+    });
+    mockImap.download.mockResolvedValue({
+      meta: {},
+      content: (await import("node:stream")).Readable.from([Buffer.from("")]),
+    });
+
+    const out = await provider.readMessage("INBOX:7");
+    expect(out.attachments).toHaveLength(1);
+    expect(out.attachments[0].mimeType).toBe("application/pdf");
+    expect(out.attachments[0].filename).toBe("1.pdf");
+    expect(out.attachments[0].id).toBe("2");
+  });
+
+  // Regression for #16: downloadAttachment should accept the filename as well
+  // as the IMAP part path. read_email renders attachments as "1.pdf (2)" so
+  // users naturally pass "1.pdf".
+  it("downloadAttachment accepts filename in addition to part path", async () => {
+    const { Readable } = await import("node:stream");
+    mockImap.fetchOne.mockResolvedValue({
+      uid: 11,
+      bodyStructure: {
+        type: "multipart/mixed",
+        childNodes: [
+          { part: "1", type: "text/plain" },
+          {
+            part: "2", type: "application/pdf",
+            disposition: "attachment",
+            dispositionParameters: { filename: "1.pdf" },
+            size: 4096,
+          },
+        ],
+      },
+    });
+    mockImap.download.mockResolvedValue({
+      meta: { filename: "1.pdf", contentType: "application/pdf" },
+      content: Readable.from([Buffer.from("%PDF-1.4")]),
+    });
+
+    const out = await provider.downloadAttachment("INBOX:11", "1.pdf");
+    expect(out.filename).toBe("1.pdf");
+    expect(out.mimeType).toBe("application/pdf");
+    // Must fetch by part path "2", not by the filename
+    expect(mockImap.download).toHaveBeenCalledWith(11, "2", expect.objectContaining({ uid: true }));
+  });
+
+  // Regression for #16: unknown attachment id lists available filenames in the error.
+  it("downloadAttachment lists available attachments when the id is unknown", async () => {
+    mockImap.fetchOne.mockResolvedValue({
+      uid: 12,
+      bodyStructure: {
+        type: "multipart/mixed",
+        childNodes: [
+          {
+            part: "2", type: "application/pdf",
+            disposition: "attachment",
+            dispositionParameters: { filename: "real.pdf" },
+            size: 4096,
+          },
+        ],
+      },
+    });
+
+    await expect(provider.downloadAttachment("INBOX:12", "missing.pdf"))
+      .rejects.toThrow(/not found.*real\.pdf/i);
+  });
+
+  // Regression for #15: non-ASCII queries that return empty from the server
+  // should fall back to a client-side envelope scan.
+  it("searchMessages falls back to client-side scan for non-ASCII queries when server returns empty", async () => {
+    mockImap.mailbox.exists = 3;
+    mockImap.search.mockResolvedValue([]); // server returns nothing for Cyrillic
+    mockImap.fetch.mockImplementation(async function* () {
+      yield { seq: 1, uid: 101, envelope: { from: [{ address: "a@x" }], subject: "invoice", to: [] } };
+      yield { seq: 2, uid: 102, envelope: { from: [{ address: "b@x" }], subject: "Срочно: расчётного периода", to: [] } };
+      yield { seq: 3, uid: 103, envelope: { from: [{ address: "c@x" }], subject: "newsletter", to: [] } };
+    });
+    mockImap.fetchAll.mockResolvedValue([
+      {
+        uid: 102,
+        envelope: { from: [{ address: "b@x" }], to: [], subject: "Срочно: расчётного периода", date: new Date(0) },
+        bodyStructure: { childNodes: [] },
+      },
+    ]);
+
+    const results = await provider.searchMessages("расчётного");
+    expect(results).toHaveLength(1);
+    expect(results[0].subject).toContain("расчётного");
+  });
+
+  // Latin-only queries should NOT trigger the client-side scan even if the
+  // server returns empty — server emptiness for Latin is legitimate.
+  it("searchMessages does not fall back to client-side scan for ASCII queries", async () => {
+    mockImap.search.mockResolvedValue([]);
+    mockImap.fetchAll.mockResolvedValue([]);
+    const results = await provider.searchMessages("invoice");
+    expect(results).toEqual([]);
+    expect(mockImap.fetch).not.toHaveBeenCalled();
+  });
 });

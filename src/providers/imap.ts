@@ -120,6 +120,20 @@ function resolveImapFlags(add: string[], remove: string[]): { addFlags: string[]
   return { addFlags, removeFlags };
 }
 
+/**
+ * Resolve the MIME type of an imapflow bodyStructure node.
+ *
+ * imapflow stores the full Content-Type in `node.type` (e.g. "text/plain",
+ * "multipart/alternative") and does not populate a separate `node.subtype` field.
+ * The defensive `node.subtype` fallback covers test fixtures and any hypothetical
+ * future shape change.
+ */
+function nodeMimeType(node: any): string {
+  if (!node) return "";
+  if (node.subtype) return `${node.type}/${node.subtype}`.toLowerCase();
+  return (node.type ?? "").toLowerCase();
+}
+
 /** Locate a body-structure node by its IMAP part path. */
 function findBodyNode(bodyStructure: any, partPath: string): any | undefined {
   if (!bodyStructure) return undefined;
@@ -129,6 +143,22 @@ function findBodyNode(bodyStructure: any, partPath: string): any | undefined {
     if (hit) return hit;
   }
   return undefined;
+}
+
+/** Filename advertised by an attachment node, if any. */
+function attachmentFilename(node: any): string | undefined {
+  return node?.dispositionParameters?.filename ?? node?.parameters?.name;
+}
+
+/** Flatten a bodyStructure into the leaf nodes that look like attachments. */
+function collectAttachmentNodes(node: any, out: any[] = []): any[] {
+  if (!node) return out;
+  const isAttachment =
+    node.disposition === "attachment" ||
+    (node.part && attachmentFilename(node) && !nodeMimeType(node).startsWith("multipart/"));
+  if (isAttachment && node.part) out.push(node);
+  for (const child of node.childNodes ?? []) collectAttachmentNodes(child, out);
+  return out;
 }
 
 /**
@@ -144,8 +174,7 @@ function findReadableTextPart(bodyStructure: any): string | undefined {
 
 function findTextPart(node: any, target: string): string | undefined {
   if (!node) return undefined;
-  const mime = node.type && node.subtype ? `${node.type}/${node.subtype}`.toLowerCase() : "";
-  if (mime === target && node.disposition !== "attachment" && node.part) {
+  if (nodeMimeType(node) === target && node.disposition !== "attachment" && node.part) {
     return node.part;
   }
   for (const child of node.childNodes ?? []) {
@@ -244,8 +273,42 @@ export class ImapProvider implements MailProvider {
       { or: [{ subject: query }, { body: query }] },
       { uid: true },
     );
-    const uids = searchResult || [];
+    let uids = searchResult || [];
+
+    // Non-ASCII queries (Cyrillic, CJK, etc.) frequently return empty from IMAP
+    // SEARCH even though imapflow sends CHARSET UTF-8: many servers match against
+    // the raw RFC 2047-encoded Subject header (=?utf-8?B?...?=) rather than the
+    // decoded text, and body search is often unindexed. Fall back to a bounded
+    // client-side envelope scan so users aren't told their messages don't exist.
+    if (uids.length === 0 && /[^\x00-\x7F]/.test(query)) {
+      uids = await this.clientSideEnvelopeSearch(query, maxResults);
+    }
     return uids.slice(-maxResults).reverse();
+  }
+
+  /**
+   * Scan the tail of the open mailbox and match the query against the decoded
+   * envelope (subject, from address, from name). Capped to avoid runaway scans
+   * on large mailboxes. Returns UIDs to match the searchByText contract.
+   */
+  private async clientSideEnvelopeSearch(query: string, maxResults: number): Promise<number[]> {
+    const status = (this.imap as any).mailbox;
+    const total = status?.exists ?? 0;
+    if (total === 0) return [];
+    const SCAN_LIMIT = 1000;
+    const startSeq = Math.max(1, total - SCAN_LIMIT + 1);
+    const needle = query.toLowerCase();
+    const matches: number[] = [];
+    for await (const msg of this.imap.fetch(`${startSeq}:*`, { uid: true, envelope: true })) {
+      const subject = (msg.envelope?.subject ?? "").toLowerCase();
+      const from = msg.envelope?.from?.[0];
+      const fromText = `${from?.name ?? ""} ${from?.address ?? ""}`.toLowerCase();
+      if (subject.includes(needle) || fromText.includes(needle)) {
+        matches.push(msg.uid);
+        if (matches.length >= maxResults) break;
+      }
+    }
+    return matches;
   }
 
   /** Fetch the N most recent UIDs from the currently locked mailbox. */
@@ -425,19 +488,33 @@ export class ImapProvider implements MailProvider {
     try {
       const meta = await this.imap.fetchOne(uid, { bodyStructure: true, uid: true }, { uid: true });
       if (!meta) throw new Error(`Message ${messageId} not found`);
-      const node = findBodyNode(meta.bodyStructure, attachmentId);
-      if (!node) throw new Error(`Attachment ${attachmentId} not found`);
 
-      const dl = await this.imap.download(uid, attachmentId, { uid: true });
+      // Accept either the IMAP part path (e.g. "2") or the attachment filename.
+      // read_email renders both — users naturally reach for the filename, which
+      // historically failed because findBodyNode only matched on part path.
+      const candidates = collectAttachmentNodes(meta.bodyStructure);
+      const node =
+        findBodyNode(meta.bodyStructure, attachmentId) ??
+        candidates.find((n) => attachmentFilename(n) === attachmentId);
+      if (!node) {
+        const available = candidates
+          .map((n) => attachmentFilename(n) ?? n.part)
+          .filter(Boolean)
+          .join(", ") || "(none)";
+        throw new Error(`Attachment "${attachmentId}" not found. Available: ${available}`);
+      }
+
+      const partPath = node.part;
+      const dl = await this.imap.download(uid, partPath, { uid: true });
       if (!dl?.content) throw new Error(`Attachment ${attachmentId} could not be downloaded`);
       const data = await readStreamToBuffer(dl.content);
 
       const filename = dl.meta?.filename
-        ?? node.parameters?.name
-        ?? node.dispositionParameters?.filename
-        ?? `attachment-${attachmentId}`;
+        ?? attachmentFilename(node)
+        ?? `attachment-${partPath}`;
       const mimeType = dl.meta?.contentType
-        ?? (node.type && node.subtype ? `${node.type}/${node.subtype}` : "application/octet-stream");
+        ?? nodeMimeType(node)
+        ?? "application/octet-stream";
       return { filename, data, mimeType };
     } finally {
       lock.release();
@@ -652,16 +729,10 @@ function toNodemailerAttachments(atts: Attachment[] | undefined) {
 }
 
 function extractImapAttachments(bodyStructure: any): AttachmentInfo[] {
-  const attachments: AttachmentInfo[] = [];
-  if (!bodyStructure?.childNodes) return attachments;
-  for (const node of bodyStructure.childNodes) {
-    if (node.disposition === "attachment" && node.parameters?.name) {
-      attachments.push({
-        id: node.part ?? "", filename: node.parameters.name,
-        mimeType: `${node.type}/${node.subtype}`, size: node.size ?? 0,
-      });
-    }
-    if (node.childNodes) { attachments.push(...extractImapAttachments(node)); }
-  }
-  return attachments;
+  return collectAttachmentNodes(bodyStructure).map((node) => ({
+    id: node.part ?? "",
+    filename: attachmentFilename(node) ?? "",
+    mimeType: nodeMimeType(node) || "application/octet-stream",
+    size: node.size ?? 0,
+  }));
 }
