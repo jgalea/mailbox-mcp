@@ -23,6 +23,15 @@ const LOG_DIR = join(homedir(), ".mailbox-mcp");
 const LOG_PATH = join(LOG_DIR, "debug.log");
 const LOG_MAX_BYTES = 1024 * 1024;
 
+// Capture our parent PID at startup. If the Claude Code harness dies abruptly
+// without sending SIGTERM/SIGHUP or closing stdin (e.g. SIGKILL'd by the OS, or
+// the harness itself is reaped) we'll be reparented to PID 1 (launchd on macOS).
+// The heartbeat watchdog below catches that and exits cleanly so we don't
+// accumulate as zombies. Catches the gap left by the signal handlers, which
+// can't intercept SIGKILL.
+const INITIAL_PPID = process.ppid;
+const HEARTBEAT_INTERVAL_MS = 30_000;
+
 function logEvent(kind: string, detail: string = ""): void {
   try {
     mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
@@ -240,17 +249,26 @@ async function main() {
   transport.onclose = () => shutdownClean("transport-close");
   transport.onerror = (err: unknown) => { logEvent("transport-error", String(err)); };
   await server.connect(transport);
-  logEvent("start", `version=${readPackageVersion()}`);
+  logEvent("start", `version=${readPackageVersion()} ppid=${INITIAL_PPID}`);
   console.error("mailbox-mcp server running on stdio");
 
-  // Heartbeat: low-rate alive marker so the debug log shows the process is
-  // surviving. Useful when triaging "did Claude Code drop the pipe, or did
-  // we crash?" — heartbeats continuing past a missing call mean the server
-  // survived and the client tore down. Now also a sanity check that the
-  // shutdown handlers above actually fire when the pipe closes (heartbeats
-  // should STOP within a minute of disconnect; if they continue, that's a
-  // bug). Unref'd so it can't keep the event loop alive on its own.
-  setInterval(() => { logEvent("alive"); }, 60_000).unref();
+  // Heartbeat + parent-process watchdog. Two jobs:
+  //   1. Low-rate alive marker in the debug log so we can tell post-hoc whether
+  //      we survived a disconnect or died.
+  //   2. Watchdog: if our parent PID changed since startup, the harness died
+  //      abruptly (SIGKILL, crash, OS reap) and we've been reparented. The
+  //      existing signal/stdin/transport handlers don't fire in that path, so
+  //      heartbeats would otherwise continue forever as a zombie. Exit cleanly.
+  //   Unref'd so the timer can't keep the event loop alive on its own.
+  setInterval(() => {
+    const currentPpid = process.ppid;
+    if (currentPpid !== INITIAL_PPID) {
+      logEvent("reparented", `from=${INITIAL_PPID} to=${currentPpid}`);
+      shutdownClean(`parent-died (ppid ${INITIAL_PPID} -> ${currentPpid})`);
+      return;
+    }
+    logEvent("alive", `ppid=${currentPpid}`);
+  }, HEARTBEAT_INTERVAL_MS).unref();
 }
 
 main().catch((err) => {
