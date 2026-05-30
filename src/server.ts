@@ -234,15 +234,47 @@ process.on("exit", (code) => { logEvent("exit", `code=${code}`); });
 // next /mcp reconnect spawns yet another, and the user has to hunt them down
 // with pkill. A clean exit is the right behaviour — Claude Code re-spawns us
 // on demand when a tool is called next.
+let shuttingDown = false;
 function shutdownClean(reason: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
   logEvent("shutdown", reason);
   // Tiny drain delay so any in-flight response has a chance to flush.
   setTimeout(() => process.exit(0), 50);
 }
+
+// Not every stream error means the client is gone. EAGAIN/EWOULDBLOCK are
+// transient backpressure hiccups that Node surfaces on a busy pipe (common when
+// flushing a large search/read response while the harness is mid-task). Treating
+// those as fatal is what made the server "randomly" drop mid-session and forced
+// a manual /mcp reconnect. Only a genuinely broken pipe (EPIPE / destroyed
+// stream / ECONNRESET) means the peer is really gone — exit on those, log and
+// stay alive on everything else.
+const FATAL_STREAM_CODES = new Set([
+  "EPIPE",
+  "ECONNRESET",
+  "ERR_STREAM_DESTROYED",
+  "ERR_STREAM_WRITE_AFTER_END",
+]);
+
+function handleStreamError(stream: "stdin" | "stdout", err: any): void {
+  const code = typeof err?.code === "string" ? err.code : "";
+  const msg = redactTokens(String(err?.message ?? err));
+  if (FATAL_STREAM_CODES.has(code)) {
+    shutdownClean(`${stream}-error: ${code} ${msg}`);
+    return;
+  }
+  // Transient — keep serving. The SDK transport recovers on the next read/write.
+  logEvent(`${stream}-error-transient`, `${code || "?"} ${msg}`);
+  console.error(`Transient ${stream} error (kept alive): ${code} ${msg}`);
+}
+
+// `end`/`close` on stdin mean the pipe really is gone — that's the harness
+// closing us, so exit. (The SDK never closes stdin itself; it only stops reading.)
 process.stdin.on("end", () => shutdownClean("stdin-end"));
 process.stdin.on("close", () => shutdownClean("stdin-close"));
-process.stdin.on("error", (err) => shutdownClean(`stdin-error: ${String(err)}`));
-process.stdout.on("error", (err) => shutdownClean(`stdout-error: ${String(err)}`));
+process.stdin.on("error", (err) => handleStreamError("stdin", err));
+process.stdout.on("error", (err) => handleStreamError("stdout", err));
 
 async function main() {
   const transport = new StdioServerTransport();
