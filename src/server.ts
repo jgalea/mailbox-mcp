@@ -23,6 +23,15 @@ const LOG_DIR = join(homedir(), ".mailbox-mcp");
 const LOG_PATH = join(LOG_DIR, "debug.log");
 const LOG_MAX_BYTES = 1024 * 1024;
 
+// Capture our parent PID at startup. If the Claude Code harness dies abruptly
+// without sending SIGTERM/SIGHUP or closing stdin (e.g. SIGKILL'd by the OS, or
+// the harness itself is reaped) we'll be reparented to PID 1 (launchd on macOS).
+// The heartbeat watchdog below catches that and exits cleanly so we don't
+// accumulate as zombies. Catches the gap left by the signal handlers, which
+// can't intercept SIGKILL.
+const INITIAL_PPID = process.ppid;
+const HEARTBEAT_INTERVAL_MS = 30_000;
+
 function logEvent(kind: string, detail: string = ""): void {
   try {
     mkdirSync(LOG_DIR, { recursive: true, mode: 0o700 });
@@ -225,32 +234,73 @@ process.on("exit", (code) => { logEvent("exit", `code=${code}`); });
 // next /mcp reconnect spawns yet another, and the user has to hunt them down
 // with pkill. A clean exit is the right behaviour — Claude Code re-spawns us
 // on demand when a tool is called next.
+let shuttingDown = false;
 function shutdownClean(reason: string): void {
+  if (shuttingDown) return;
+  shuttingDown = true;
   logEvent("shutdown", reason);
   // Tiny drain delay so any in-flight response has a chance to flush.
   setTimeout(() => process.exit(0), 50);
 }
+
+// Not every stream error means the client is gone. EAGAIN/EWOULDBLOCK are
+// transient backpressure hiccups that Node surfaces on a busy pipe (common when
+// flushing a large search/read response while the harness is mid-task). Treating
+// those as fatal is what made the server "randomly" drop mid-session and forced
+// a manual /mcp reconnect. Only a genuinely broken pipe (EPIPE / destroyed
+// stream / ECONNRESET) means the peer is really gone — exit on those, log and
+// stay alive on everything else.
+const FATAL_STREAM_CODES = new Set([
+  "EPIPE",
+  "ECONNRESET",
+  "ERR_STREAM_DESTROYED",
+  "ERR_STREAM_WRITE_AFTER_END",
+]);
+
+function handleStreamError(stream: "stdin" | "stdout", err: any): void {
+  const code = typeof err?.code === "string" ? err.code : "";
+  const msg = redactTokens(String(err?.message ?? err));
+  if (FATAL_STREAM_CODES.has(code)) {
+    shutdownClean(`${stream}-error: ${code} ${msg}`);
+    return;
+  }
+  // Transient — keep serving. The SDK transport recovers on the next read/write.
+  logEvent(`${stream}-error-transient`, `${code || "?"} ${msg}`);
+  console.error(`Transient ${stream} error (kept alive): ${code} ${msg}`);
+}
+
+// `end`/`close` on stdin mean the pipe really is gone — that's the harness
+// closing us, so exit. (The SDK never closes stdin itself; it only stops reading.)
 process.stdin.on("end", () => shutdownClean("stdin-end"));
 process.stdin.on("close", () => shutdownClean("stdin-close"));
-process.stdin.on("error", (err) => shutdownClean(`stdin-error: ${String(err)}`));
-process.stdout.on("error", (err) => shutdownClean(`stdout-error: ${String(err)}`));
+process.stdin.on("error", (err) => handleStreamError("stdin", err));
+process.stdout.on("error", (err) => handleStreamError("stdout", err));
 
 async function main() {
   const transport = new StdioServerTransport();
   transport.onclose = () => shutdownClean("transport-close");
   transport.onerror = (err: unknown) => { logEvent("transport-error", String(err)); };
   await server.connect(transport);
-  logEvent("start", `version=${readPackageVersion()}`);
+  logEvent("start", `version=${readPackageVersion()} ppid=${INITIAL_PPID}`);
   console.error("mailbox-mcp server running on stdio");
 
-  // Heartbeat: low-rate alive marker so the debug log shows the process is
-  // surviving. Useful when triaging "did Claude Code drop the pipe, or did
-  // we crash?" — heartbeats continuing past a missing call mean the server
-  // survived and the client tore down. Now also a sanity check that the
-  // shutdown handlers above actually fire when the pipe closes (heartbeats
-  // should STOP within a minute of disconnect; if they continue, that's a
-  // bug). Unref'd so it can't keep the event loop alive on its own.
-  setInterval(() => { logEvent("alive"); }, 60_000).unref();
+  // Heartbeat + parent-process watchdog. Two jobs:
+  //   1. Low-rate alive marker in the debug log so we can tell post-hoc whether
+  //      we survived a disconnect or died.
+  //   2. Watchdog: if our parent PID changed since startup, the harness died
+  //      abruptly (SIGKILL, crash, OS reap) and we've been reparented. The
+  //      existing signal/stdin/transport handlers don't fire in that path, so
+  //      heartbeats would otherwise continue forever as a zombie. Exit cleanly.
+  //   Unref'd so the timer can't keep the event loop alive on its own.
+  setInterval(() => {
+    const currentPpid = process.ppid;
+    if (currentPpid !== INITIAL_PPID) {
+      logEvent("reparented", `from=${INITIAL_PPID} to=${currentPpid}`);
+      shutdownClean(`parent-died (ppid ${INITIAL_PPID} -> ${currentPpid})`);
+      return;
+    }
+    logEvent("alive", `ppid=${currentPpid}`);
+  }, HEARTBEAT_INTERVAL_MS).unref();
 }
 
 main().catch((err) => {
