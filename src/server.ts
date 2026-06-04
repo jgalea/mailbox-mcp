@@ -218,14 +218,24 @@ process.on("uncaughtException", (err) => {
   logEvent("uncaughtException", msg);
 });
 
-// Record *why* the process exited so Jean can tell a clean shutdown apart
-// from a client-initiated disconnect or an OOM kill.
-for (const sig of ["SIGINT", "SIGTERM", "SIGHUP", "SIGPIPE"] as const) {
-  process.on(sig, () => {
-    logEvent("signal", sig);
-    process.exit(0);
-  });
+// Terminal job-control signals reach us only because the harness spawns this
+// server inside its controlling-terminal process group. SIGHUP (terminal
+// hangup) and SIGINT (Ctrl-C) are therefore collateral from the user
+// interacting with the terminal -- detaching zellij, closing the window,
+// interrupting Claude -- NOT the harness asking us to stop. Exiting on them is
+// what made the server "keep disconnecting" mid-session. Ignore them and keep
+// serving: the harness stops us authoritatively by closing stdin (EOF, handled
+// below) or sending SIGTERM, and the reparent watchdog catches an abrupt
+// parent death. SIGPIPE is already ignored by Node and surfaces as EPIPE on
+// write, handled by the stream-error path.
+for (const sig of ["SIGHUP", "SIGINT"] as const) {
+  process.on(sig, () => { logEvent("signal-ignored", sig); });
 }
+// SIGTERM is the harness's explicit "stop now" -- honour it with a clean exit.
+process.on("SIGTERM", () => {
+  logEvent("signal", "SIGTERM");
+  process.exit(0);
+});
 process.on("exit", (code) => { logEvent("exit", `code=${code}`); });
 
 // When Claude Code closes the stdio pipe (parent restart, session compaction,
