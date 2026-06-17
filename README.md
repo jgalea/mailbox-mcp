@@ -16,26 +16,35 @@ mailbox-mcp is an [MCP server](https://modelcontextprotocol.io) that connects yo
 
 ### Install
 
+Add to your Claude Code MCP config (`~/.claude.json`). The package runs straight from npm via `npx`:
+
+```json
+{
+  "mcpServers": {
+    "mailbox": {
+      "command": "npx",
+      "args": ["-y", "mailbox-mcp"],
+      "env": {
+        "MAILBOX_MCP_PASSPHRASE": "a-long-random-passphrase"
+      }
+    }
+  }
+}
+```
+
+`MAILBOX_MCP_PASSPHRASE` is the passphrase used to encrypt IMAP/JMAP credentials at rest; it's required before adding an IMAP or JMAP account, and unused for Gmail-only setups.
+
+<details>
+<summary>From source instead</summary>
+
 ```bash
 git clone https://github.com/jgalea/mailbox-mcp.git
 cd mailbox-mcp
 npm install && npm run build
 ```
 
-Then add to your Claude Code MCP config (`~/.claude.json`):
-
-```json
-{
-  "mcpServers": {
-    "mailbox": {
-      "command": "node",
-      "args": ["/path/to/mailbox-mcp/dist/server.js"]
-    }
-  }
-}
-```
-
-Replace `/path/to/mailbox-mcp` with the actual path where you cloned the repo.
+Then point the config at the build with `"command": "node", "args": ["/path/to/mailbox-mcp/dist/server.js"]`.
+</details>
 
 ### Add a Gmail Account
 

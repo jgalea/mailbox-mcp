@@ -34,7 +34,6 @@ registerTool(
         smtpPort: { type: "number", description: "SMTP server port (IMAP only, default 587)" },
         username: { type: "string", description: "IMAP/SMTP username (IMAP only)" },
         password: { type: "string", description: "IMAP/SMTP password or app password (IMAP only)" },
-        passphrase: { type: "string", description: "Passphrase for encrypting credentials (IMAP/JMAP). Can also be set via MAILBOX_MCP_PASSPHRASE env var." },
         sessionUrl: { type: "string", description: "JMAP session URL override (JMAP only, auto-discovered from host by default)" },
       },
       required: ["alias", "provider", "email"],
@@ -59,14 +58,14 @@ registerTool(
       const smtpPort = (args.smtpPort as number) ?? 587;
       const username = (args.username as string) || process.env.MAILBOX_MCP_IMAP_USERNAME;
       const password = (args.password as string) || process.env.MAILBOX_MCP_IMAP_PASSWORD;
-      const passphrase = (args.passphrase as string) ?? process.env.MAILBOX_MCP_PASSPHRASE ?? "";
+      const passphrase = process.env.MAILBOX_MCP_PASSPHRASE ?? "";
 
       if (!host || !smtpHost || !username || !password) {
         return { content: [{ type: "text", text: "IMAP accounts require: host, smtpHost, username, and password" }], isError: true };
       }
 
       if (!passphrase) {
-        return { content: [{ type: "text", text: "IMAP accounts require a passphrase for credential encryption. Provide it as a parameter or set MAILBOX_MCP_PASSPHRASE." }], isError: true };
+        return { content: [{ type: "text", text: "IMAP accounts require a passphrase for credential encryption. Set MAILBOX_MCP_PASSPHRASE in the server environment." }], isError: true };
       }
 
       ctx.accountManager.addAccount(alias, { provider: "imap", email, host, port, smtpHost, smtpPort });
@@ -79,7 +78,7 @@ registerTool(
       const host = args.host as string;
       const username = (args.username as string) || process.env.MAILBOX_MCP_JMAP_USERNAME;
       const password = (args.password as string) || process.env.MAILBOX_MCP_JMAP_PASSWORD;
-      const passphrase = (args.passphrase as string) ?? process.env.MAILBOX_MCP_PASSPHRASE ?? "";
+      const passphrase = process.env.MAILBOX_MCP_PASSPHRASE ?? "";
       const sessionUrl = args.sessionUrl as string | undefined;
 
       if (!host || !username || !password) {
@@ -87,7 +86,7 @@ registerTool(
       }
 
       if (!passphrase) {
-        return { content: [{ type: "text", text: "JMAP accounts require a passphrase for credential encryption. Provide it as a parameter or set MAILBOX_MCP_PASSPHRASE." }], isError: true };
+        return { content: [{ type: "text", text: "JMAP accounts require a passphrase for credential encryption. Set MAILBOX_MCP_PASSPHRASE in the server environment." }], isError: true };
       }
 
       // Validate sessionUrl early: must be HTTPS and not target private networks

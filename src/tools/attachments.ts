@@ -1,4 +1,4 @@
-import { join } from "node:path";
+import { join, basename } from "node:path";
 import { writeFileSync, mkdirSync, existsSync, chmodSync } from "node:fs";
 import { registerTool } from "./registry.js";
 import { validateAttachmentPath } from "../security/validation.js";
@@ -24,13 +24,14 @@ registerTool(
     const result = await provider.downloadAttachment(args.message_id as string, args.attachment_id as string);
 
     validateAttachmentPath(result.filename);
+    const safeName = basename(result.filename);
 
     const dir = (args.save_to as string) ?? DEFAULT_DOWNLOAD_DIR;
     validateSavePath(dir);
 
     if (!existsSync(dir)) { mkdirSync(dir, { recursive: true }); }
 
-    const filePath = join(dir, result.filename);
+    const filePath = join(dir, safeName);
     writeFileSync(filePath, result.data, { mode: 0o600 });
     chmodSync(filePath, 0o600);
 

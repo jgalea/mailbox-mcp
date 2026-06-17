@@ -1,6 +1,10 @@
 # Changelog
 
-## Unreleased
+## 0.9.2 — 2026-06-17
+
+### Security
+- **Passphrase is now environment-only.** The `authenticate` tool no longer accepts a `passphrase` parameter; the encryption passphrase must come from `MAILBOX_MCP_PASSPHRASE`. Tool arguments are serialized into MCP host logs and model context, so accepting a secret there leaked it. The env-var path was already the recommended one.
+- **Attachment and `.eml` filenames are forced to a single path component.** Download/export now run `basename()` on the provider-supplied filename before joining it to the save directory, so a malicious or compromised mail server can't steer the write into a subdirectory via a `filename` like `subdir/evil`.
 
 ### Fixed
 - **"Keeps disconnecting" when the terminal is detached or Claude is interrupted.** The signal handlers exited the process on `SIGHUP` and `SIGINT`. Those signals reach the server only because the harness spawns it inside its controlling-terminal process group, so detaching zellij, closing the terminal window, or hitting Ctrl-C/interrupt delivered them as collateral and killed a server the session still wanted. The lifecycle log showed nothing wrong (`signal SIGHUP` then `exit code=0`), so it looked like a clean shutdown. The server now ignores `SIGHUP`/`SIGINT` and relies on the harness's authoritative shutdown paths instead: stdin EOF (guaranteed when the parent goes away), `SIGTERM`, and the reparent watchdog. Covered by `tests/signal-resilience.test.ts`.

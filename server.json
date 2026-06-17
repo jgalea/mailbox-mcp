@@ -1,0 +1,29 @@
+{
+  "$schema": "https://static.modelcontextprotocol.io/schemas/2025-12-11/server.schema.json",
+  "name": "io.github.jgalea/mailbox-mcp",
+  "description": "Multi-account, multi-provider email MCP server (Gmail, IMAP, JMAP) with search, send, drafts, labels, and encrypted credentials.",
+  "repository": {
+    "url": "https://github.com/jgalea/mailbox-mcp",
+    "source": "github"
+  },
+  "version": "0.9.2",
+  "packages": [
+    {
+      "registryType": "npm",
+      "identifier": "mailbox-mcp",
+      "version": "0.9.2",
+      "transport": {
+        "type": "stdio"
+      },
+      "environmentVariables": [
+        {
+          "name": "MAILBOX_MCP_PASSPHRASE",
+          "description": "Passphrase used to encrypt IMAP/JMAP credentials at rest. Required for IMAP and JMAP accounts.",
+          "format": "string",
+          "isSecret": true,
+          "isRequired": false
+        }
+      ]
+    }
+  ]
+}
