@@ -79,7 +79,7 @@ This opens a browser window to complete the OAuth flow. Your tokens are stored l
 In Claude Code, run:
 
 ```
-authenticate alias="work" provider="imap" email="you@company.com" host="imap.company.com" smtpHost="smtp.company.com" username="you@company.com" password="your-app-password"
+authenticate alias="work" provider="imap" email="you@company.com" host="imap.company.com" smtpHost="smtp.company.com" username="you@company.com" password="<app-password>"
 ```
 
 Credentials are encrypted at rest using AES-256-GCM.
@@ -89,7 +89,7 @@ Credentials are encrypted at rest using AES-256-GCM.
 In Claude Code, run:
 
 ```
-authenticate alias="fastmail" provider="jmap" email="you@fastmail.com" host="fastmail.com" username="you@fastmail.com" password="your-app-password"
+authenticate alias="fastmail" provider="jmap" email="you@fastmail.com" host="fastmail.com" username="you@fastmail.com" password="<app-password>"
 ```
 
 JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are encrypted at rest using AES-256-GCM.

@@ -20,11 +20,12 @@ describe("JMAP credential encryption", () => {
   });
 
   it("encrypts and decrypts credentials round-trip", () => {
-    const creds = { username: "user@example.com", password: "app-pass-123" };
+    const APP_PASS = "app-pass-123";
+    const creds = { username: "user@example.com", password: APP_PASS };
     encryptJmapCredentials(tempDir, "fastmail", creds, TEST_PASSPHRASE);
     const decrypted = decryptJmapCredentials(tempDir, "fastmail", TEST_PASSPHRASE);
     expect(decrypted.username).toBe("user@example.com");
-    expect(decrypted.password).toBe("app-pass-123");
+    expect(decrypted.password).toBe(APP_PASS);
   });
 
   it("throws when no credentials exist", () => {
