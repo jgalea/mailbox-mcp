@@ -376,8 +376,10 @@ export class ImapProvider implements MailProvider {
   }
 
   async sendMessage(to: string[], subject: string, body: string, options?: SendOptions): Promise<string> {
+    // No alias list to check against on plain IMAP/SMTP — the relay is the
+    // authority on which senders it will accept, and it rejects at send time.
     const result = await this.smtp.sendMail({
-      from: this.email,
+      from: options?.from ? stripCRLF(options.from) : this.email,
       to: stripCRLF(to.join(", ")),
       cc: options?.cc ? stripCRLF(options.cc.join(", ")) : undefined,
       bcc: options?.bcc ? stripCRLF(options.bcc.join(", ")) : undefined,
@@ -394,7 +396,7 @@ export class ImapProvider implements MailProvider {
     const to = [replyAddress];
     if (options?.replyAll) { to.push(...original.to, ...original.cc); }
     const subject = ensureReplyPrefix(original.subject);
-    return this.sendMessage(to, subject, body, { cc: options?.cc, bcc: options?.bcc, html: options?.html, attachments: options?.attachments });
+    return this.sendMessage(to, subject, body, { from: options?.from, cc: options?.cc, bcc: options?.bcc, html: options?.html, attachments: options?.attachments });
   }
 
   async forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string> {
@@ -403,12 +405,12 @@ export class ImapProvider implements MailProvider {
       ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
       : `---------- Forwarded message ----------\n${original.body}`;
     const subject = ensureForwardPrefix(original.subject);
-    return this.sendMessage(to, subject, fwdBody, { html: options?.html, attachments: options?.attachments });
+    return this.sendMessage(to, subject, fwdBody, { from: options?.from, html: options?.html, attachments: options?.attachments });
   }
 
   async createDraft(to: string[], subject: string, body: string, options?: DraftOptions): Promise<string> {
     const raw = buildRawMimeMessage({
-      from: this.email,
+      from: options?.from ?? this.email,
       to, subject, body,
       cc: options?.cc, bcc: options?.bcc,
       html: options?.html,

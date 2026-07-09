@@ -1,6 +1,6 @@
 // src/providers/jmap.ts
 import { stripCRLF, validateNoSSRF } from "../security/validation.js";
-import { ensureReplyPrefix, ensureForwardPrefix } from "./headers.js";
+import { ensureReplyPrefix, ensureForwardPrefix, extractAddress } from "./headers.js";
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
   EmailThread, Label, SendOptions, ReplyOptions, ForwardOptions,
@@ -127,7 +127,7 @@ export class JmapProvider implements MailProvider {
         Authorization: this.authHeader,
       },
       body: JSON.stringify({
-        using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail"],
+        using: ["urn:ietf:params:jmap:core", "urn:ietf:params:jmap:mail", "urn:ietf:params:jmap:submission"],
         methodCalls,
       }),
       redirect: "error",
@@ -420,11 +420,35 @@ export class JmapProvider implements MailProvider {
     return parts;
   }
 
+  private identityCache?: { email: string; id: string }[];
+
+  /**
+   * A JMAP server only accepts a submission whose From matches one of the
+   * account's identities, and it needs that identity's id to do so. Resolve
+   * both here, or fail with the addresses that would have worked.
+   */
+  private async resolveIdentity(from?: string): Promise<{ email: string; identityId?: string }> {
+    if (!from) return { email: this.email };
+    if (!this.identityCache) {
+      const responses = await this.apiCall([["Identity/get", { accountId: (await this.ensureSession()).accountId }, "0"]]);
+      const list = responses.find((r: any) => r[0] === "Identity/get")?.[1]?.list ?? [];
+      this.identityCache = list.map((i: any) => ({ email: String(i.email).toLowerCase(), id: i.id }));
+    }
+    const address = extractAddress(from);
+    const match = this.identityCache!.find((i) => i.email === address);
+    if (!match) {
+      const known = this.identityCache!.map((i) => i.email).join(", ");
+      throw new Error(`Cannot send as "${address}". Identities on this account: ${known || "none"}.`);
+    }
+    return { email: match.email, identityId: match.id };
+  }
+
   async sendMessage(to: string[], subject: string, body: string, options?: SendOptions): Promise<string> {
     const session = await this.ensureSession();
+    const identity = await this.resolveIdentity(options?.from);
     const attachmentParts = await this.buildAttachmentParts(options?.attachments);
     const emailCreate: any = {
-      from: [{ email: this.email }],
+      from: [{ email: identity.email }],
       to: to.map(e => ({ email: stripCRLF(e) })),
       subject: stripCRLF(subject),
       textBody: [{ value: body, type: "text/plain" }],
@@ -436,9 +460,11 @@ export class JmapProvider implements MailProvider {
       delete emailCreate.textBody;
     }
     if (attachmentParts) emailCreate.attachments = attachmentParts;
+    const submission: any = { emailId: "#draft0" };
+    if (identity.identityId) submission.identityId = identity.identityId;
     const responses = await this.apiCall([
       ["Email/set", { accountId: session.accountId, create: { draft0: emailCreate } }, "0"],
-      ["EmailSubmission/set", { accountId: session.accountId, create: { sub0: { emailId: "#draft0" } } }, "1"],
+      ["EmailSubmission/set", { accountId: session.accountId, create: { sub0: submission } }, "1"],
     ]);
     const created = responses.find((r: any) => r[0] === "Email/set")?.[1]?.created?.draft0;
     return created?.id ?? "";
@@ -450,7 +476,7 @@ export class JmapProvider implements MailProvider {
     const to = [replyAddress];
     if (options?.replyAll) { to.push(...original.to, ...original.cc); }
     const subject = ensureReplyPrefix(original.subject);
-    return this.sendMessage(to, subject, body, { cc: options?.cc, bcc: options?.bcc, html: options?.html, attachments: options?.attachments });
+    return this.sendMessage(to, subject, body, { from: options?.from, cc: options?.cc, bcc: options?.bcc, html: options?.html, attachments: options?.attachments });
   }
 
   async forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string> {
@@ -459,15 +485,16 @@ export class JmapProvider implements MailProvider {
       ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
       : `---------- Forwarded message ----------\n${original.body}`;
     const subject = ensureForwardPrefix(original.subject);
-    return this.sendMessage(to, subject, fwdBody, { html: options?.html, attachments: options?.attachments });
+    return this.sendMessage(to, subject, fwdBody, { from: options?.from, html: options?.html, attachments: options?.attachments });
   }
 
   async createDraft(to: string[], subject: string, body: string, options?: DraftOptions): Promise<string> {
     const session = await this.ensureSession();
+    const identity = await this.resolveIdentity(options?.from);
     const draftsMailbox = await this.findMailboxByRole("drafts");
     const attachmentParts = await this.buildAttachmentParts(options?.attachments);
     const emailCreate: any = {
-      from: [{ email: this.email }],
+      from: [{ email: identity.email }],
       to: to.map(e => ({ email: stripCRLF(e) })),
       subject: stripCRLF(subject),
       mailboxIds: { [draftsMailbox.id]: true },

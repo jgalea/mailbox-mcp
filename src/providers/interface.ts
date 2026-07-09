@@ -66,6 +66,12 @@ export interface Label {
 }
 
 export interface SendOptions {
+  /**
+   * Sender address. Must be an address the account is allowed to send as
+   * (a Gmail send-as alias, a JMAP identity). Defaults to the account's
+   * primary address.
+   */
+  from?: string;
   cc?: string[];
   bcc?: string[];
   html?: boolean;
@@ -74,6 +80,7 @@ export interface SendOptions {
 }
 
 export interface ReplyOptions {
+  from?: string;
   replyAll?: boolean;
   cc?: string[];
   bcc?: string[];
@@ -82,12 +89,14 @@ export interface ReplyOptions {
 }
 
 export interface ForwardOptions {
+  from?: string;
   message?: string;
   html?: boolean;
   attachments?: Attachment[];
 }
 
 export interface DraftOptions {
+  from?: string;
   cc?: string[];
   bcc?: string[];
   html?: boolean;

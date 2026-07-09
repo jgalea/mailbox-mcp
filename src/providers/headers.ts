@@ -16,6 +16,16 @@ export function ensureForwardPrefix(subject: string): string {
 }
 
 /**
+ * Pull the bare addr-spec out of a header value, so `Jean <a@b.com>` and
+ * `a@b.com` both compare equal. Lowercased because mail domains are
+ * case-insensitive and alias lists are matched by equality.
+ */
+export function extractAddress(raw: string): string {
+  const angled = raw.match(/<([^>]*)>/);
+  return (angled ? angled[1] : raw).trim().toLowerCase();
+}
+
+/**
  * Split a header value like `"Smith, John" <j@x>, Other <o@y>` into the
  * individual address strings. Commas inside double-quoted display names or
  * inside angle brackets are preserved.

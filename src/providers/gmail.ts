@@ -1,6 +1,6 @@
 import { Readable } from "node:stream";
 import { buildRawMimeMessage } from "./mime.js";
-import { ensureReplyPrefix, ensureForwardPrefix, splitAddressList } from "./headers.js";
+import { ensureReplyPrefix, ensureForwardPrefix, splitAddressList, extractAddress } from "./headers.js";
 
 // Lightweight types matching the gmail_v1 shapes we use, to avoid importing
 // the massive googleapis type definitions (which add ~2min to tsc builds).
@@ -106,6 +106,7 @@ export type GmailEncodeOptions = SendOptions & { inReplyTo?: string; references?
 
 export function buildEmailBuffer(to: string[], subject: string, body: string, options?: GmailEncodeOptions): Buffer {
   return buildRawMimeMessage({
+    from: options?.from,
     to, subject, body,
     cc: options?.cc, bcc: options?.bcc,
     replyTo: options?.replyTo,
@@ -138,6 +139,31 @@ export class GmailProvider implements MailProvider {
   };
 
   constructor(private gmail: GmailClient) {}
+
+  private sendAsCache?: string[];
+
+  /**
+   * Gmail silently falls back to the primary address when the From header
+   * names an address that isn't a verified send-as alias, so a wrong sender
+   * looks like a successful send. Check up front and fail loudly instead.
+   * Pending (unverified) aliases are rejected; Gmail will not send as them.
+   */
+  async assertCanSendAs(from: string): Promise<void> {
+    if (!this.sendAsCache) {
+      const res = await this.gmail.users.settings.sendAs.list({ userId: "me" });
+      const addresses: string[] = (res.data.sendAs ?? [])
+        .filter((a: any) => a.verificationStatus !== "pending")
+        .map((a: any) => String(a.sendAsEmail).toLowerCase());
+      this.sendAsCache = addresses;
+    }
+    const allowed: string[] = this.sendAsCache;
+    const address = extractAddress(from);
+    if (!allowed.includes(address)) {
+      throw new Error(
+        `Cannot send as "${address}". Verified send-as addresses on this account: ${allowed.join(", ")}.`,
+      );
+    }
+  }
 
   async searchMessages(query: string, maxResults: number = 20, folder?: string): Promise<EmailSummary[]> {
     const q = folder ? `label:${folder} ${query}`.trim() : query;
@@ -200,6 +226,7 @@ export class GmailProvider implements MailProvider {
   }
 
   async sendMessage(to: string[], subject: string, body: string, options?: SendOptions): Promise<string> {
+    if (options?.from) await this.assertCanSendAs(options.from);
     const rawBuffer = buildEmailBuffer(to, subject, body, options);
     if (shouldUseMediaUpload(rawBuffer, options)) {
       const res = await this.gmail.users.messages.send({
@@ -217,6 +244,7 @@ export class GmailProvider implements MailProvider {
   }
 
   async replyToMessage(messageId: string, body: string, options?: ReplyOptions): Promise<string> {
+    if (options?.from) await this.assertCanSendAs(options.from);
     const original = await this.gmail.users.messages.get({
       userId: "me", id: messageId, format: "metadata",
       metadataHeaders: ["From", "To", "Cc", "Subject", "Message-ID", "Reply-To"],
@@ -236,6 +264,7 @@ export class GmailProvider implements MailProvider {
 
     const reSubject = ensureReplyPrefix(subject);
     const encodeOpts: GmailEncodeOptions = {
+      from: options?.from,
       html: options?.html,
       cc: options?.cc,
       bcc: options?.bcc,
@@ -266,10 +295,11 @@ export class GmailProvider implements MailProvider {
       ? `${options.message}\n\n---------- Forwarded message ----------\n${original.body}`
       : `---------- Forwarded message ----------\n${original.body}`;
     const fwdSubject = ensureForwardPrefix(original.subject);
-    return this.sendMessage(to, fwdSubject, fwdBody, { html: options?.html, attachments: options?.attachments });
+    return this.sendMessage(to, fwdSubject, fwdBody, { from: options?.from, html: options?.html, attachments: options?.attachments });
   }
 
   async createDraft(to: string[], subject: string, body: string, options?: DraftOptions): Promise<string> {
+    if (options?.from) await this.assertCanSendAs(options.from);
     let threadId: string | undefined;
     let replyHeaders: { inReplyTo?: string; references?: string } | undefined;
 

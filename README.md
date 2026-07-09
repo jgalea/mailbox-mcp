@@ -116,10 +116,10 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 | `multi_account_search` | Run the same query across every configured account in parallel |
 | `read_email` | Read a message |
 | `read_thread` | Read a conversation thread (Gmail + JMAP) |
-| `send_email` | Send a new email (supports `attachments`) |
-| `reply_email` | Reply to a message (supports `attachments`) |
-| `forward_email` | Forward a message (supports `attachments`) |
-| `create_draft` | Create a draft (supports reply drafts via `in_reply_to`, `attachments`) |
+| `send_email` | Send a new email (supports `from`, `attachments`) |
+| `reply_email` | Reply to a message (supports `from`, `attachments`) |
+| `forward_email` | Forward a message (supports `from`, `attachments`) |
+| `create_draft` | Create a draft (supports reply drafts via `in_reply_to`, plus `from`, `attachments`) |
 | `list_drafts` | List drafts for an account |
 | `send_draft` | Send an existing draft |
 | `trash_emails` | Trash messages |
@@ -169,6 +169,22 @@ send_email account="personal" to=["friend@example.com"] subject="The report" bod
 - Paths are resolved through any symlinks, and filenames are stripped of CRLF before going into headers.
 - Gmail routes messages with attachments through the multipart upload endpoint (35 MB API limit) instead of the JSON endpoint, so the 25 MB message cap is the real ceiling.
 - JMAP uploads each file to the server's upload URL first, then references the resulting blobIds in the Email/set call.
+
+## Choosing the sender address
+
+One account often speaks for several addresses. `send_email`, `reply_email`, `forward_email`, `create_draft`, and `update_draft` accept an optional `from` parameter; without it, the account's primary address is used.
+
+```
+reply_email account="personal" message_id="18f..." from="jean@example.com" body="Thanks, sorted."
+```
+
+Accepted forms are `alias@example.com` and `Name <alias@example.com>`; matching is case-insensitive.
+
+The address is checked against the account before anything is sent, and the call fails with the list of usable addresses if it doesn't match. This matters because Gmail silently falls back to the primary address when the `From` header names an address you haven't verified, so a message can be sent from the wrong identity and still look like it succeeded. Some recipients (Amazon's customer service, for one) reject mail that doesn't come from the address on file.
+
+- Gmail: the address must be a send-as alias with verification completed. Run `list_send_as` to see them. Pending aliases are refused.
+- JMAP: the address must match one of the account's identities; its `identityId` is attached to the submission.
+- IMAP: no alias list exists to check against, so any `from` is passed to the SMTP relay, which accepts or rejects it at send time.
 
 ## License
 
