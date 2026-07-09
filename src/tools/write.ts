@@ -29,6 +29,12 @@ const attachmentsSchema = {
     "Optional list of local file paths to attach. Each path must point to a regular file under 25 MB; total per message is also capped at 25 MB.",
 };
 
+const fromSchema = {
+  type: "string",
+  description:
+    "Sender address, e.g. 'alias@example.com' or 'Name <alias@example.com>'. Must be a verified send-as alias (Gmail) or identity (JMAP) on the account, otherwise the call fails. Defaults to the account's primary address. Use list_send_as to see the options.",
+};
+
 registerTool(
   {
     name: "send_email",
@@ -40,6 +46,7 @@ registerTool(
         to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" },
         subject: { type: "string", description: "Email subject" },
         body: { type: "string", description: "Email body" },
+        from: fromSchema,
         cc: { type: "array", items: { type: "string" }, description: "CC recipients" },
         bcc: { type: "array", items: { type: "string" }, description: "BCC recipients" },
         html: { type: "boolean", description: "Send as HTML (default false)" },
@@ -54,6 +61,7 @@ registerTool(
     const attachments = loadAttachments(args.attachments as string[] | undefined);
     const provider = await ctx.getProvider(args.account as string);
     const id = await provider.sendMessage(args.to as string[], args.subject as string, args.body as string, {
+      from: args.from as string | undefined,
       cc: args.cc as string[] | undefined, bcc: args.bcc as string[] | undefined, html: args.html as boolean | undefined,
       attachments,
     });
@@ -71,6 +79,7 @@ registerTool(
         account: { type: "string", description: "Account alias" },
         message_id: { type: "string", description: "Message ID to reply to" },
         body: { type: "string", description: "Reply body" },
+        from: fromSchema,
         reply_all: { type: "boolean", description: "Reply to all recipients (default false)" },
         cc: { type: "array", items: { type: "string" }, description: "Additional CC recipients" },
         bcc: { type: "array", items: { type: "string" }, description: "Additional BCC recipients" },
@@ -86,6 +95,7 @@ registerTool(
     const attachments = loadAttachments(args.attachments as string[] | undefined);
     const provider = await ctx.getProvider(args.account as string);
     const id = await provider.replyToMessage(args.message_id as string, args.body as string, {
+      from: args.from as string | undefined,
       replyAll: args.reply_all as boolean | undefined,
       cc: args.cc as string[] | undefined,
       bcc: args.bcc as string[] | undefined,
@@ -106,6 +116,7 @@ registerTool(
         account: { type: "string", description: "Account alias" },
         message_id: { type: "string", description: "Message ID to forward" },
         to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" },
+        from: fromSchema,
         message: { type: "string", description: "Optional message to add above the forwarded content" },
         html: { type: "boolean", description: "Send as HTML (default false)" },
         attachments: attachmentsSchema,
@@ -119,6 +130,7 @@ registerTool(
     const attachments = loadAttachments(args.attachments as string[] | undefined);
     const provider = await ctx.getProvider(args.account as string);
     const id = await provider.forwardMessage(args.message_id as string, args.to as string[], {
+      from: args.from as string | undefined,
       message: args.message as string | undefined, html: args.html as boolean | undefined,
       attachments,
     });
@@ -137,6 +149,7 @@ registerTool(
         to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" },
         subject: { type: "string", description: "Email subject" },
         body: { type: "string", description: "Email body" },
+        from: fromSchema,
         cc: { type: "array", items: { type: "string" }, description: "CC recipients" },
         bcc: { type: "array", items: { type: "string" }, description: "BCC recipients" },
         html: { type: "boolean", description: "Send as HTML (default false)" },
@@ -150,6 +163,7 @@ registerTool(
     const attachments = loadAttachments(args.attachments as string[] | undefined);
     const provider = await ctx.getProvider(args.account as string);
     const id = await provider.createDraft(args.to as string[], args.subject as string, args.body as string, {
+      from: args.from as string | undefined,
       cc: args.cc as string[] | undefined, bcc: args.bcc as string[] | undefined,
       html: args.html as boolean | undefined, inReplyTo: args.in_reply_to as string | undefined,
       attachments,

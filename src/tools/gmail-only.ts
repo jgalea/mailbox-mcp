@@ -1,7 +1,7 @@
 import { registerTool } from "./registry.js";
 import { fenceEmailHeader, fenceEmailContent, stripFencing } from "../security/sanitize.js";
 import { checkSendLimit } from "./write.js";
-import { buildEmailBuffer, shouldUseMediaUpload, type GmailEncodeOptions } from "../providers/gmail.js";
+import { buildEmailBuffer, shouldUseMediaUpload, type GmailEncodeOptions, type GmailProvider } from "../providers/gmail.js";
 import { loadAttachments } from "../security/attachment-loader.js";
 
 function getGmailApi(provider: any) {
@@ -220,6 +220,10 @@ registerTool(
         to: { type: "array", items: { type: "string" }, description: "Recipient email addresses" },
         subject: { type: "string", description: "Email subject" },
         body: { type: "string", description: "Email body" },
+        from: {
+          type: "string",
+          description: "Sender address. Must be a verified send-as alias on the account. Defaults to the primary address.",
+        },
         cc: { type: "array", items: { type: "string" }, description: "CC recipients" },
         bcc: { type: "array", items: { type: "string" }, description: "BCC recipients" },
         html: { type: "boolean", description: "Send as HTML (default false)" },
@@ -232,11 +236,14 @@ registerTool(
     },
   },
   async (args, ctx) => {
-    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
+    const provider = await ctx.getProvider(args.account as string);
+    const gmail = getGmailApi(provider);
+    if (args.from) await (provider as GmailProvider).assertCanSendAs(args.from as string);
     const existing = await gmail.users.drafts.get({ userId: "me", id: args.draft_id as string, format: "metadata" });
     const threadId = existing.data.message?.threadId ?? undefined;
     const attachments = loadAttachments(args.attachments as string[] | undefined);
     const encodeOpts: GmailEncodeOptions = {
+      from: args.from as string | undefined,
       cc: args.cc as string[] | undefined,
       bcc: args.bcc as string[] | undefined,
       html: args.html as boolean | undefined,

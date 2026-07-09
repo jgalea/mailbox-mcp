@@ -447,3 +447,60 @@ describe("JmapProvider", () => {
     expect(result.data).toBeInstanceOf(Buffer);
   });
 });
+
+describe("JmapProvider from address", () => {
+  let provider: JmapProvider;
+
+  beforeEach(() => {
+    vi.clearAllMocks();
+    provider = new JmapProvider("fastmail.com", "test@fastmail.com", "testuser", "testpass");
+  });
+
+  it("sends as a matching identity and passes its identityId on the submission", async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(mockApiResponse([["Identity/get", { list: [
+        { id: "i1", email: "test@fastmail.com" },
+        { id: "i2", email: "alias@fastmail.com" },
+      ] }, "0"]]))
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Email/set", { created: { draft0: { id: "e1" } } }, "0"],
+        ["EmailSubmission/set", { created: { sub0: { id: "s1" } } }, "1"],
+      ]));
+
+    await provider.sendMessage(["a@b.com"], "Hi", "Body", { from: "alias@fastmail.com" });
+
+    const sendBody = JSON.parse(mockFetch.mock.calls[2][1].body);
+    const emailSet = sendBody.methodCalls.find((c: any[]) => c[0] === "Email/set");
+    const submission = sendBody.methodCalls.find((c: any[]) => c[0] === "EmailSubmission/set");
+    expect(emailSet[1].create.draft0.from).toEqual([{ email: "alias@fastmail.com" }]);
+    expect(submission[1].create.sub0.identityId).toBe("i2");
+  });
+
+  it("rejects a from with no matching identity, naming the ones that exist", async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(mockApiResponse([["Identity/get", { list: [
+        { id: "i1", email: "test@fastmail.com" },
+      ] }, "0"]]));
+
+    await expect(
+      provider.sendMessage(["a@b.com"], "Hi", "Body", { from: "nope@x.com" }),
+    ).rejects.toThrow(/Cannot send as "nope@x\.com".*test@fastmail\.com/s);
+  });
+
+  it("skips the identity lookup entirely when from is omitted", async () => {
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Email/set", { created: { draft0: { id: "e1" } } }, "0"],
+        ["EmailSubmission/set", { created: { sub0: { id: "s1" } } }, "1"],
+      ]));
+
+    await provider.sendMessage(["a@b.com"], "Hi", "Body", {});
+
+    const bodies = mockFetch.mock.calls.slice(1).map((c: any) => JSON.parse(c[1].body));
+    const calledIdentityGet = bodies.some((b: any) => b.methodCalls.some((m: any[]) => m[0] === "Identity/get"));
+    expect(calledIdentityGet).toBe(false);
+  });
+});
