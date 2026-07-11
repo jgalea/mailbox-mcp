@@ -7,6 +7,7 @@
 - **The address is validated before the message goes out.** Gmail quietly rewrites the `From` header to the primary address when it names an unverified alias, so sending as the wrong identity looked like a clean success. Gmail now checks the address against the account's send-as list (rejecting `pending` aliases) and JMAP against its identities, and both fail with the addresses that would have worked. IMAP has no alias list, so `from` is passed to the SMTP relay to accept or reject.
 
 ### Fixed
+- **`update_draft` crashed with `part.body.pipe is not a function` when the draft had attachments.** The multipart media upload was handed the raw MIME `Buffer`, but googleapis pipes the media body and expects a stream. Every other media-upload path already wrapped the buffer in `Readable.from()`; `update_draft` was the one that didn't. Regression-tested.
 - **JMAP submissions did not carry an `identityId`.** `EmailSubmission/set` left the server to guess the sending identity, which is what made a non-default sender impossible. The resolved identity's id is now attached to the submission, and `urn:ietf:params:jmap:submission` was added to the `using` list it should always have declared.
 
 ## 0.9.2 — 2026-06-17

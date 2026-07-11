@@ -1,6 +1,14 @@
+<div align="center">
+
 # mailbox-mcp
 
-Give your AI tools access to your email. Search, read, send, and manage messages across multiple accounts without leaving your terminal.
+[![npm](https://img.shields.io/badge/NPM-mailbox--mcp-CB3837?style=for-the-badge&logo=npm&logoColor=white)](https://www.npmjs.com/package/mailbox-mcp)
+[![License](https://img.shields.io/badge/LICENSE-MIT-5C9E31?style=for-the-badge)](LICENSE)
+[![Built by](https://img.shields.io/badge/BUILT%20BY-AGENTVANIA-8A2BE2?style=for-the-badge)](https://agentvania.com)
+
+**Give your AI tools access to your email. Search, read, send, and manage messages across multiple accounts without leaving your terminal.**
+
+</div>
 
 mailbox-mcp is an [MCP server](https://modelcontextprotocol.io) that connects your email to Claude Code, Cursor, Windsurf, or any AI tool that supports the Model Context Protocol. Instead of switching between your terminal and Gmail, you ask the AI to find that invoice, summarize a thread, or draft a reply — and it does.
 
@@ -131,6 +139,10 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 | `delete_label` | Delete a label/folder |
 | `modify_email` | Modify message labels |
 | `batch_modify_emails` | Bulk modify labels |
+| `bulk_modify` | Add/remove labels on every message matching a query (search-then-batch; `dry_run` supported) |
+| `bulk_trash` | Trash every message matching a query (`dry_run` supported) |
+| `list_recent_bulk_ops` | List recorded bulk operations from the transaction log |
+| `undo_bulk_op` | Reverse a recorded bulk operation against the exact ids it touched |
 | `count_unread_by_label` | Show unread message counts per label/folder |
 | `download_attachment` | Download an attachment |
 | `export_email` | Save a message as a `.eml` file |
@@ -142,6 +154,8 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 
 | Tool | Description |
 |------|-------------|
+| `update_draft` | Replace the contents of an existing draft (thread association preserved) |
+| `delete_draft` | Permanently delete a draft |
 | `create_filter` | Create a filter |
 | `list_filters` | List filters |
 | `delete_filter` | Delete a filter |

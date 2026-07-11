@@ -68,6 +68,26 @@ describe("gmail-only tools", () => {
     expect(typeof updateCall.requestBody.message.raw).toBe("string");
   });
 
+  it("update_draft with attachments uploads a stream, not a raw Buffer", async () => {
+    const { writeFileSync, mkdtempSync } = await import("node:fs");
+    const { tmpdir } = await import("node:os");
+    const { join } = await import("node:path");
+    const dir = mkdtempSync(join(tmpdir(), "mailbox-mcp-test-"));
+    const file = join(dir, "invoice.pdf");
+    writeFileSync(file, "fake-pdf-bytes");
+
+    const result = await handleToolCall(
+      "update_draft",
+      { account: "personal", draft_id: "draft-1", to: ["a@b.com"], subject: "S", body: "B", attachments: [file] },
+      ctx,
+    );
+    expect(result.isError).toBeFalsy();
+    const updateCall = mockProvider.gmailApi.users.drafts.update.mock.calls[0][0];
+    expect(updateCall.media.mimeType).toBe("message/rfc822");
+    expect(Buffer.isBuffer(updateCall.media.body)).toBe(false);
+    expect(typeof updateCall.media.body.pipe).toBe("function");
+  });
+
   it("delete_draft removes the draft", async () => {
     const result = await handleToolCall(
       "delete_draft",

@@ -1,3 +1,4 @@
+import { Readable } from "node:stream";
 import { registerTool } from "./registry.js";
 import { fenceEmailHeader, fenceEmailContent, stripFencing } from "../security/sanitize.js";
 import { checkSendLimit } from "./write.js";
@@ -255,7 +256,7 @@ registerTool(
         userId: "me",
         id: args.draft_id as string,
         requestBody: { message: { threadId } },
-        media: { mimeType: "message/rfc822", body: rawBuffer },
+        media: { mimeType: "message/rfc822", body: Readable.from(rawBuffer) },
       });
     } else {
       await gmail.users.drafts.update({
