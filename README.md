@@ -171,6 +171,26 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 | `bulk_unsubscribe` | Bulk unsubscribe |
 | `list_send_as` | List send-as aliases |
 
+## Choosing which tools load
+
+49 tool schemas cost roughly 6,000 tokens in clients that load every definition into context. In everyday use a handful of tools do most of the work, so you can expose only the groups you need with `MAILBOX_MCP_TOOLS` (comma-separated). Unset means everything loads.
+
+```json
+"env": {
+  "MAILBOX_MCP_TOOLS": "core,attachments"
+}
+```
+
+| Group | Tools | What it covers |
+|-------|-------|----------------|
+| `core` | 19 | accounts, search, read, send, reply, forward, drafts, inbox summary (~2,900 tokens) |
+| `organize` | 9 | labels, star, archive, trash, modify |
+| `bulk` | 4 | query-wide modify/trash with dry-run and undo |
+| `attachments` | 3 | download attachments, export `.eml` |
+| `gmail-extras` | 14 | filters, templates, signatures, vacation, unsubscribe, send-as |
+
+Calls to tools in disabled groups fail with an error naming the group to enable.
+
 ## Sending attachments
 
 `send_email`, `reply_email`, `forward_email`, and `create_draft` accept an optional `attachments` parameter — an array of local file paths. The server reads each file, detects its MIME type from the extension, and embeds it in the outgoing message (or draft).
