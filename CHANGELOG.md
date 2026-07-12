@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.10.0 — 2026-07-12
 
 ### Added
 - **`from` parameter on every send path.** `send_email`, `reply_email`, `forward_email`, `create_draft`, and `update_draft` now accept `from`, so an account with several addresses can pick which one it speaks as. Previously the sender was whatever the provider defaulted to: the Gmail path never emitted a `From` header at all (so Gmail used the primary address), while IMAP and JMAP hardcoded the account address. `buildRawMimeMessage` already supported `from`; nothing upstream ever passed it. Accepts `alias@example.com` or `Name <alias@example.com>`, matched case-insensitively.
