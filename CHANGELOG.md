@@ -5,8 +5,6 @@
 ### Added
 - **`from` parameter on every send path.** `send_email`, `reply_email`, `forward_email`, `create_draft`, and `update_draft` now accept `from`, so an account with several addresses can pick which one it speaks as. Previously the sender was whatever the provider defaulted to: the Gmail path never emitted a `From` header at all (so Gmail used the primary address), while IMAP and JMAP hardcoded the account address. `buildRawMimeMessage` already supported `from`; nothing upstream ever passed it. Accepts `alias@example.com` or `Name <alias@example.com>`, matched case-insensitively.
 - **The address is validated before the message goes out.** Gmail quietly rewrites the `From` header to the primary address when it names an unverified alias, so sending as the wrong identity looked like a clean success. Gmail now checks the address against the account's send-as list (rejecting `pending` aliases) and JMAP against its identities, and both fail with the addresses that would have worked. IMAP has no alias list, so `from` is passed to the SMTP relay to accept or reject.
-
-### Added
 - **`MAILBOX_MCP_TOOLS` — load only the tool groups you use.** All 49 schemas weigh ~6k tokens in clients that eager-load definitions, while real transcripts show a handful of tools doing most of the work. Tools are now grouped (`core`, `organize`, `bulk`, `attachments`, `gmail-extras`) and the env var takes a comma-separated list of groups to expose; `core` alone is 19 tools at roughly half the payload. Unset keeps the previous expose-everything behaviour. Disabled tools also refuse calls with an error naming the group.
 
 ### Fixed
