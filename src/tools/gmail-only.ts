@@ -17,14 +17,27 @@ registerTool(
   { name: "list_filters", description: "List Gmail filters",
     inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" } }, required: ["account"] } },
   async (args, ctx) => {
-    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
+    const provider = await ctx.getProvider(args.account as string);
+    const gmail = getGmailApi(provider);
     const res = await gmail.users.settings.filters.list({ userId: "me" });
     const filters = res.data.filter ?? [];
     if (filters.length === 0) return { content: [{ type: "text", text: "No filters configured." }] };
-    const lines = filters.map((f: any) => `- **${f.id}**: ${fenceEmailContent(JSON.stringify(f.criteria))} → ${fenceEmailContent(JSON.stringify(f.action))}`);
+    const names = await (provider as GmailProvider).labelNamesById();
+    const describe = (part: unknown, withNames = false) => {
+      if (!part) return "{}";
+      const value = withNames ? mapLabelIdsToNames(part as Record<string, unknown>, names) : part;
+      return fenceEmailContent(JSON.stringify(value));
+    };
+    const lines = filters.map((f: any) => `- **${f.id}**: ${describe(f.criteria)} → ${describe(f.action, true)}`);
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }, "filters"
 );
+
+function mapLabelIdsToNames(action: Record<string, unknown>, names: Map<string, string>): Record<string, unknown> {
+  const named = (ids: unknown) =>
+    Array.isArray(ids) ? ids.map((id) => names.get(id as string) ?? id) : ids;
+  return { ...action, addLabelIds: named(action.addLabelIds), removeLabelIds: named(action.removeLabelIds) };
+}
 
 registerTool(
   { name: "create_filter", description: "Create a Gmail filter",
@@ -32,19 +45,31 @@ registerTool(
       account: { type: "string", description: "Account alias" },
       from: { type: "string", description: "Filter by sender" }, to: { type: "string", description: "Filter by recipient" },
       subject: { type: "string", description: "Filter by subject" }, query: { type: "string", description: "Filter by search query" },
-      add_label: { type: "string", description: "Label to apply" }, remove_label: { type: "string", description: "Label to remove" },
+      add_label: { type: "string", description: "Label to apply, by name (e.g. 'Investing' or 'Newsletters/Investing') or by label ID" },
+      remove_label: { type: "string", description: "Label to remove, by name or ID" },
+      create_label: { type: "boolean", description: "Create add_label if no label with that name exists (default false)" },
       archive: { type: "boolean", description: "Skip inbox" }, mark_read: { type: "boolean", description: "Mark as read" },
     }, required: ["account"] } },
   async (args, ctx) => {
-    const gmail = getGmailApi(await ctx.getProvider(args.account as string));
+    const provider = await ctx.getProvider(args.account as string);
+    const gmail = getGmailApi(provider);
     const criteria: Record<string, string> = {};
     if (args.from) criteria.from = args.from as string;
     if (args.to) criteria.to = args.to as string;
     if (args.subject) criteria.subject = args.subject as string;
     if (args.query) criteria.query = args.query as string;
+    if (Object.keys(criteria).length === 0) {
+      return { content: [{ type: "text", text: "A filter needs at least one criterion (from, to, subject, or query)." }], isError: true };
+    }
     const action: Record<string, any> = {};
-    if (args.add_label) action.addLabelIds = [args.add_label as string];
-    if (args.remove_label) action.removeLabelIds = [args.remove_label as string];
+    if (args.add_label) {
+      action.addLabelIds = await (provider as GmailProvider).resolveLabelIds(
+        [args.add_label as string], { create: args.create_label as boolean | undefined }
+      );
+    }
+    if (args.remove_label) {
+      action.removeLabelIds = await (provider as GmailProvider).resolveLabelIds([args.remove_label as string]);
+    }
     if (args.archive) action.removeLabelIds = [...(action.removeLabelIds ?? []), "INBOX"];
     if (args.mark_read) action.removeLabelIds = [...(action.removeLabelIds ?? []), "UNREAD"];
     const res = await gmail.users.settings.filters.create({ userId: "me", requestBody: { criteria, action } });

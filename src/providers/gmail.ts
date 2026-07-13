@@ -32,6 +32,8 @@ function getHeader(headers: GmailMessagePartHeader[] | undefined, name: string):
   return headers?.find((h) => h.name?.toLowerCase() === name.toLowerCase())?.value ?? "";
 }
 
+const LABEL_ID_PATTERN = /^(Label_\d+|[A-Z][A-Z0-9_]*)$/;
+
 function* chunkIds(ids: string[], size: number): Generator<string[]> {
   for (let i = 0; i < ids.length; i += size) yield ids.slice(i, i + size);
 }
@@ -366,19 +368,58 @@ export class GmailProvider implements MailProvider {
     await this.gmail.users.labels.delete({ userId: "me", id: labelId });
   }
 
+  // Gmail's API takes label IDs, not names. Callers (and models) naturally pass
+  // names like "Investing" or "Newsletters/Investing", which the API rejects with
+  // "Invalid label". Map names to IDs here; anything that already looks like an ID
+  // (system labels, Label_123) passes through untouched.
+  async resolveLabelIds(labels: string[], opts: { create?: boolean } = {}): Promise<string[]> {
+    if (labels.length === 0) return [];
+    // Anything already in ID form (INBOX, UNREAD, CATEGORY_SOCIAL, Label_12) needs no lookup.
+    if (labels.every((l) => LABEL_ID_PATTERN.test(l))) return labels;
+    const all = await this.listLabels();
+    const byId = new Set(all.map((l) => l.id));
+    const byName = new Map(all.map((l) => [l.name.toLowerCase(), l.id]));
+    const resolved: string[] = [];
+    for (const label of labels) {
+      if (byId.has(label)) { resolved.push(label); continue; }
+      const hit = byName.get(label.toLowerCase());
+      if (hit) { resolved.push(hit); continue; }
+      if (opts.create) {
+        const created = await this.createLabel(label);
+        byId.add(created.id);
+        byName.set(created.name.toLowerCase(), created.id);
+        resolved.push(created.id);
+        continue;
+      }
+      const names = all.filter((l) => l.type === "user").map((l) => l.name).sort();
+      throw new Error(`No label named "${label}". Existing user labels: ${names.join(", ")}`);
+    }
+    return resolved;
+  }
+
+  async labelNamesById(): Promise<Map<string, string>> {
+    return new Map((await this.listLabels()).map((l) => [l.id, l.name]));
+  }
+
   async modifyLabels(messageId: string, add: string[], remove: string[]): Promise<void> {
     await this.gmail.users.messages.modify({
-      userId: "me", id: messageId, requestBody: { addLabelIds: add, removeLabelIds: remove },
+      userId: "me", id: messageId,
+      requestBody: {
+        addLabelIds: await this.resolveLabelIds(add),
+        removeLabelIds: await this.resolveLabelIds(remove),
+      },
     });
   }
 
   async batchModifyLabels(messageIds: string[], add: string[], remove: string[]): Promise<void> {
+    const addIds = await this.resolveLabelIds(add);
+    const removeIds = await this.resolveLabelIds(remove);
     // Single API call per 1000 ids. Previously a per-message loop, which stalled
     // the MCP connection on batches in the hundreds.
     for (const chunk of chunkIds(messageIds, 1000)) {
       await this.gmail.users.messages.batchModify({
         userId: "me",
-        requestBody: { ids: chunk, addLabelIds: add, removeLabelIds: remove },
+        requestBody: { ids: chunk, addLabelIds: addIds, removeLabelIds: removeIds },
       });
     }
   }

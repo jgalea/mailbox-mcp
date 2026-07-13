@@ -29,6 +29,10 @@ function createMockGmailProvider() {
     capabilities: { threads: true, filters: true, templates: true, signatures: true, vacation: true, unsubscribe: true, attachments: true, inboxSummary: true },
     gmailApi: mockGmailApi,
     searchMessages: vi.fn().mockResolvedValue([]),
+    resolveLabelIds: vi.fn(async (labels: string[]) =>
+      labels.map((l) => (l === "Investing" ? "Label_7" : l))
+    ),
+    labelNamesById: vi.fn(async () => new Map([["Label_7", "Investing"]])),
     modifyLabels: vi.fn().mockResolvedValue(undefined),
     readMessage: vi.fn().mockResolvedValue({ subject: "Test", body: "Body", from: "a@b.com", to: ["c@d.com"], cc: [], bcc: [], attachments: [] }),
     createDraft: vi.fn().mockResolvedValue("draft-1"),
@@ -48,6 +52,34 @@ describe("gmail-only tools", () => {
   it("list_filters returns filters", async () => {
     const result = await handleToolCall("list_filters", { account: "personal" }, ctx);
     expect(result.content[0].text).toContain("No filters");
+  });
+
+  it("list_filters survives a filter with no criteria and shows label names", async () => {
+    mockProvider.gmailApi.users.settings.filters.list.mockResolvedValue({
+      data: { filter: [{ id: "f1" }, { id: "f2", criteria: { from: "alts.co" }, action: { addLabelIds: ["Label_7"] } }] },
+    });
+    const result = await handleToolCall("list_filters", { account: "personal" }, ctx);
+    expect(result.isError).toBeFalsy();
+    expect(result.content[0].text).toContain("Investing");
+  });
+
+  it("create_filter resolves a label name to its Gmail label ID", async () => {
+    const result = await handleToolCall(
+      "create_filter",
+      { account: "personal", from: "alts.co", add_label: "Investing", archive: true },
+      ctx,
+    );
+    expect(result.isError).toBeFalsy();
+    const body = mockProvider.gmailApi.users.settings.filters.create.mock.calls[0][0].requestBody;
+    expect(body.action.addLabelIds).toEqual(["Label_7"]);
+    expect(body.action.removeLabelIds).toEqual(["INBOX"]);
+    expect(body.criteria).toEqual({ from: "alts.co" });
+  });
+
+  it("create_filter rejects a filter with no criteria", async () => {
+    const result = await handleToolCall("create_filter", { account: "personal", add_label: "Investing" }, ctx);
+    expect(result.isError).toBe(true);
+    expect(mockProvider.gmailApi.users.settings.filters.create).not.toHaveBeenCalled();
   });
 
   it("update_draft rewrites an existing draft and preserves its thread", async () => {

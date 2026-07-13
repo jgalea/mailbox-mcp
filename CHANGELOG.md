@@ -1,5 +1,11 @@
 # Changelog
 
+## Unreleased
+
+### Fixed
+- **`create_filter` rejected every label with "Invalid label".** Gmail's filter API takes label *IDs*, but the tool passed the label *name* straight into `addLabelIds`/`removeLabelIds`, so a filter could never be created against a real label. Names are now resolved to IDs (case-insensitively; values already in ID form pass through), and an unknown name fails with the list of labels that do exist. `modify_email` and the bulk label tools had the same latent bug and now resolve names too. `create_filter` also takes `create_label` to create the target label when it's missing, and refuses a filter with no criteria instead of creating one that matches everything.
+- **`list_filters` crashed with `Cannot read properties of undefined`.** A filter with no `criteria` or no `action` produced `JSON.stringify(undefined)`, which the sanitizer then tried to `.replace()` on. Missing parts now render as `{}`, and label IDs in the action are shown as label names.
+
 ## 0.10.0 — 2026-07-12
 
 ### Added

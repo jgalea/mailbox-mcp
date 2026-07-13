@@ -294,3 +294,46 @@ describe("GmailProvider", () => {
     expect(mockGmail.users.labels.get).toHaveBeenCalledTimes(5);
   });
 });
+
+describe("GmailProvider label resolution", () => {
+  let mockGmail: ReturnType<typeof createMockGmail>;
+  let provider: GmailProvider;
+
+  beforeEach(() => {
+    mockGmail = createMockGmail();
+    provider = new GmailProvider(mockGmail as any);
+    mockGmail.users.labels.list.mockResolvedValue({
+      data: {
+        labels: [
+          { id: "INBOX", name: "INBOX", type: "system" },
+          { id: "Label_7", name: "Investing", type: "user" },
+          { id: "Label_9", name: "Newsletters", type: "user" },
+        ],
+      },
+    });
+  });
+
+  it("maps a label name to its ID, case-insensitively", async () => {
+    expect(await provider.resolveLabelIds(["investing"])).toEqual(["Label_7"]);
+  });
+
+  it("passes through values that are already label IDs", async () => {
+    expect(await provider.resolveLabelIds(["Label_7", "INBOX"])).toEqual(["Label_7", "INBOX"]);
+  });
+
+  it("throws with the available label names when the name is unknown", async () => {
+    await expect(provider.resolveLabelIds(["Newsletters/Investing"])).rejects.toThrow(/Investing, Newsletters/);
+  });
+
+  it("creates the label when asked to", async () => {
+    mockGmail.users.labels.create.mockResolvedValue({ data: { id: "Label_42", name: "Newsletters/Investing" } });
+    expect(await provider.resolveLabelIds(["Newsletters/Investing"], { create: true })).toEqual(["Label_42"]);
+  });
+
+  it("batchModifyLabels sends IDs, not names", async () => {
+    await provider.batchModifyLabels(["m1"], ["Investing"], ["INBOX"]);
+    const body = mockGmail.users.messages.batchModify.mock.calls[0][0].requestBody;
+    expect(body.addLabelIds).toEqual(["Label_7"]);
+    expect(body.removeLabelIds).toEqual(["INBOX"]);
+  });
+});
