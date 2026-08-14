@@ -63,9 +63,22 @@ registerTool(
     }
     const action: Record<string, any> = {};
     if (args.add_label) {
-      action.addLabelIds = await (provider as GmailProvider).resolveLabelIds(
+      const resolved = await (provider as GmailProvider).resolveLabelIds(
         [args.add_label as string], { create: args.create_label as boolean | undefined }
       );
+      // A filter applying TRASH or SPAM is persistent server-side state: it keeps
+      // destroying or junking matching mail long after the call that created it,
+      // and nothing in the client transcript shows it working. Checked after
+      // resolution rather than on the raw argument, so a label *named* "Trash"
+      // cannot smuggle the system ID through.
+      const destructive = resolved.filter((id) => id === "TRASH" || id === "SPAM");
+      if (destructive.length > 0) {
+        return {
+          content: [{ type: "text", text: `Refusing to create a filter that applies ${destructive.join(", ")}: it would silently destroy or junk every future matching message. Use an ordinary label, or create this filter in Gmail directly.` }],
+          isError: true,
+        };
+      }
+      action.addLabelIds = resolved;
     }
     if (args.remove_label) {
       action.removeLabelIds = await (provider as GmailProvider).resolveLabelIds([args.remove_label as string]);
