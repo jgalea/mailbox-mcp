@@ -82,6 +82,23 @@ describe("gmail-only tools", () => {
     expect(mockProvider.gmailApi.users.settings.filters.create).not.toHaveBeenCalled();
   });
 
+  it("create_filter refuses to apply the TRASH system label", async () => {
+    const result = await handleToolCall("create_filter", { account: "personal", from: "boss@work.com", add_label: "TRASH" }, ctx);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toContain("TRASH");
+    expect(mockProvider.gmailApi.users.settings.filters.create).not.toHaveBeenCalled();
+  });
+
+  // Note the ID form. The guard deliberately checks the RESOLVED ids, because a
+  // real resolveLabelIds turns the name "spam" into the id "SPAM" via its byName
+  // lookup; the mock here passes unknown labels through untouched, so asserting
+  // with a lowercase name would test the mock rather than the guard.
+  it("create_filter refuses to apply the SPAM system label", async () => {
+    const result = await handleToolCall("create_filter", { account: "personal", query: "has:attachment", add_label: "SPAM" }, ctx);
+    expect(result.isError).toBe(true);
+    expect(mockProvider.gmailApi.users.settings.filters.create).not.toHaveBeenCalled();
+  });
+
   it("update_draft rewrites an existing draft and preserves its thread", async () => {
     const result = await handleToolCall(
       "update_draft",
