@@ -24,7 +24,7 @@ registerTool(
       args.folder as string | undefined,
     );
     if (results.length === 0) return { content: [{ type: "text", text: "No messages found." }] };
-    const lines = results.map((m) => `**${m.id}** | ${fenceEmailHeader(m.from, "from")} | ${fenceEmailContent(m.subject, "subject")}\n  ${fenceEmailContent(m.snippet)} (${m.date})`);
+    const lines = results.map((m) => `**${m.id}** | ${fenceEmailHeader(m.from, "from")} | ${fenceEmailContent(m.subject, "subject")}\n  ${fenceEmailContent(m.snippet)} (${fenceEmailHeader(m.date, "date")})`);
     return { content: [{ type: "text", text: lines.join("\n\n") }] };
   }
 );
@@ -48,7 +48,7 @@ registerTool(
     const text = [
       `**From:** ${fenceEmailHeader(msg.from, "from")}`, `**To:** ${fenceEmailHeader(msg.to.join(", "), "to")}`,
       msg.cc.length ? `**Cc:** ${fenceEmailHeader(msg.cc.join(", "), "cc")}` : "",
-      `**Subject:** ${fenceEmailContent(msg.subject, "subject")}`, `**Date:** ${msg.date}`,
+      `**Subject:** ${fenceEmailContent(msg.subject, "subject")}`, `**Date:** ${fenceEmailHeader(msg.date, "date")}`,
       msg.attachments.length ? `**Attachments:** ${msg.attachments.map((a) => `${fenceEmailHeader(a.filename, "filename")} (${a.id})`).join(", ")}` : "",
       "", fenceEmailContent(msg.body),
     ].filter(Boolean).join("\n");
@@ -74,7 +74,7 @@ registerTool(
     const thread = await provider.readThread(args.thread_id as string);
     const text = [
       `**Thread:** ${thread.id} — ${fenceEmailContent(thread.subject, "subject")}`, `**Messages:** ${thread.messages.length}`, "",
-      ...thread.messages.map((m, i) => `--- Message ${i + 1} ---\n**From:** ${fenceEmailHeader(m.from, "from")}\n**Date:** ${m.date}\n\n${fenceEmailContent(m.body)}`),
+      ...thread.messages.map((m, i) => `--- Message ${i + 1} ---\n**From:** ${fenceEmailHeader(m.from, "from")}\n**Date:** ${fenceEmailHeader(m.date, "date")}\n\n${fenceEmailContent(m.body)}`),
     ].join("\n");
     return { content: [{ type: "text", text }] };
   },
@@ -94,7 +94,7 @@ registerTool(
   async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const summary = await provider.inboxSummary();
-    const recentLines = summary.recent.map((m) => `- ${fenceEmailHeader(m.from, "from")}: ${fenceEmailContent(m.subject, "subject")} (${m.date})`);
+    const recentLines = summary.recent.map((m) => `- ${fenceEmailHeader(m.from, "from")}: ${fenceEmailContent(m.subject, "subject")} (${fenceEmailHeader(m.date, "date")})`);
     const text = [`**Total:** ${summary.total}`, `**Unread:** ${summary.unread}`, "", "**Recent:**", ...recentLines].join("\n");
     return { content: [{ type: "text", text }] };
   }
