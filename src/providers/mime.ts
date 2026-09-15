@@ -60,12 +60,38 @@ function encodeHeaderValue(value: string): string {
   return `=?utf-8?B?${encoded}?=`;
 }
 
+const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
+const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
+                "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
+
+/**
+ * RFC 5322 Date header in the sender's own local time.
+ *
+ * Without this the provider stamps the Date itself, and Gmail has been
+ * observed writing US offsets for a sender in Europe/Lisbon, with two
+ * messages forty minutes apart carrying -0500 and -0400. Recipients then
+ * read the wrong send time, which matters whenever an email is used as
+ * evidence of when something was sent.
+ */
+export function rfc5322Date(d: Date = new Date()): string {
+  const pad = (n: number) => String(n).padStart(2, "0");
+  const off = -d.getTimezoneOffset();
+  const sign = off < 0 ? "-" : "+";
+  const abs = Math.abs(off);
+  return (
+    `${DAYS[d.getDay()]}, ${pad(d.getDate())} ${MONTHS[d.getMonth()]} ${d.getFullYear()} ` +
+    `${pad(d.getHours())}:${pad(d.getMinutes())}:${pad(d.getSeconds())} ` +
+    `${sign}${pad(Math.floor(abs / 60))}${pad(abs % 60)}`
+  );
+}
+
 /** Build a raw RFC 2822 message as a Buffer, with optional multipart/mixed attachments. */
 export function buildRawMimeMessage(opts: BuildMimeOptions): Buffer {
   const hasAttachments = !!opts.attachments && opts.attachments.length > 0;
   const bodyContentType = opts.html ? "text/html; charset=utf-8" : "text/plain; charset=utf-8";
 
   const headers: string[] = [];
+  headers.push(`Date: ${rfc5322Date()}`);
   if (opts.from) headers.push(`From: ${stripCRLF(opts.from)}`);
   headers.push(`To: ${stripCRLF(opts.to.join(", "))}`);
   if (opts.cc?.length) headers.push(`Cc: ${stripCRLF(opts.cc.join(", "))}`);
