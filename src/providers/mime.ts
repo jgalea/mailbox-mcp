@@ -60,6 +60,34 @@ function encodeHeaderValue(value: string): string {
   return `=?utf-8?B?${encoded}?=`;
 }
 
+/**
+ * Encode the display names in an address header (To/Cc/Bcc/From/Reply-To).
+ *
+ * The address itself must stay literal, so this cannot reuse encodeHeaderValue
+ * on the whole string. Only the phrase before <addr> is encoded, and only when
+ * it needs it. Without this, a name like "Administración" goes out as raw UTF-8
+ * and relays that read the bytes as Latin-1 re-encode it, so the recipient sees
+ * "AdministraciÃ³n" or worse. Subject was already handled; these were not.
+ */
+export function encodeAddressList(list: string): string {
+  return list
+    .split(",")
+    .map((part) => part.trim())
+    .filter(Boolean)
+    .map((addr) => {
+      const m = addr.match(/^(.*?)\s*<([^>]*)>$/);
+      if (!m) return addr; // bare address, nothing to encode
+      const name = m[1].trim().replace(/^"(.*)"$/, "$1");
+      const mailbox = m[2].trim();
+      if (!name) return `<${mailbox}>`;
+      // Already an encoded-word: leave it, or we double-encode.
+      if (/^=\?[^?]+\?[BbQq]\?.*\?=$/.test(name)) return `${name} <${mailbox}>`;
+      if (/^[\x20-\x7e]*$/.test(name) && !/[,;:<>@"]/.test(name)) return `${name} <${mailbox}>`;
+      return `${encodeHeaderValue(name)} <${mailbox}>`;
+    })
+    .join(", ");
+}
+
 const DAYS = ["Sun", "Mon", "Tue", "Wed", "Thu", "Fri", "Sat"];
 const MONTHS = ["Jan", "Feb", "Mar", "Apr", "May", "Jun",
                 "Jul", "Aug", "Sep", "Oct", "Nov", "Dec"];
@@ -92,11 +120,11 @@ export function buildRawMimeMessage(opts: BuildMimeOptions): Buffer {
 
   const headers: string[] = [];
   headers.push(`Date: ${rfc5322Date()}`);
-  if (opts.from) headers.push(`From: ${stripCRLF(opts.from)}`);
-  headers.push(`To: ${stripCRLF(opts.to.join(", "))}`);
-  if (opts.cc?.length) headers.push(`Cc: ${stripCRLF(opts.cc.join(", "))}`);
-  if (opts.bcc?.length) headers.push(`Bcc: ${stripCRLF(opts.bcc.join(", "))}`);
-  if (opts.replyTo) headers.push(`Reply-To: ${stripCRLF(opts.replyTo)}`);
+  if (opts.from) headers.push(`From: ${encodeAddressList(stripCRLF(opts.from))}`);
+  headers.push(`To: ${encodeAddressList(stripCRLF(opts.to.join(", ")))}`);
+  if (opts.cc?.length) headers.push(`Cc: ${encodeAddressList(stripCRLF(opts.cc.join(", ")))}`);
+  if (opts.bcc?.length) headers.push(`Bcc: ${encodeAddressList(stripCRLF(opts.bcc.join(", ")))}`);
+  if (opts.replyTo) headers.push(`Reply-To: ${encodeAddressList(stripCRLF(opts.replyTo))}`);
   headers.push(`Subject: ${encodeHeaderValue(stripCRLF(opts.subject))}`);
   if (opts.inReplyTo) headers.push(`In-Reply-To: ${stripCRLF(opts.inReplyTo)}`);
   if (opts.references) headers.push(`References: ${stripCRLF(opts.references)}`);
