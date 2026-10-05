@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { AccountManager, hasGuards, tightenGuards, type AccountGuards } from "../src/accounts.js";
+import { AccountManager, hasGuards, type AccountGuards } from "../src/accounts.js";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -117,51 +117,36 @@ describe("AccountManager", () => {
     expect(new AccountManager(tempDir).getAccount("b").authservId).toBe("mx1.messagingengine.com");
   });
 
-  describe("guards can only be kept or tightened", () => {
+  it("validates trustedSenders like the allowlist and persists it", () => {
+    expect(() => manager.addAccount("a", { provider: "gmail", email: "u@example.com", trustedSenders: ["example.net"] })).toThrow(/trustedSenders/);
+    expect(() => manager.addAccount("b", { provider: "gmail", email: "u@example.com", trustedSenders: "x@example.net" as any })).toThrow(/trustedSenders/);
+    manager.addAccount("c", { provider: "gmail", email: "u@example.com", trustedSenders: ["x@example.net", "@partner.example"] });
+    expect(new AccountManager(tempDir).getAccount("c").trustedSenders).toEqual(["x@example.net", "@partner.example"]);
+  });
+
+  describe("guarded accounts cannot be changed from a tool call", () => {
     const strict: AccountGuards = {
       readOnly: true, approval: "external", untrustedReadLock: "refuse", dailySendLimit: 5,
-      allowedRecipients: ["@example.com", "boss@example.org"], authservId: "mx.example.com",
+      allowedRecipients: ["@example.com", "boss@example.org"], authservId: "mx.example.com", trustedSenders: ["boss@example.org"],
     };
 
-    it("tightenGuards never loosens any field", () => {
-      const loose: AccountGuards = {
-        readOnly: false, draftsOnly: false, untrustedReadLock: "approval", dailySendLimit: 500,
-        allowedRecipients: ["anyone@example.com", "@attacker.example", "boss@example.org", "leak@attacker.example"], authservId: "mx.attacker.example",
-      };
-      expect(tightenGuards(strict, loose)).toEqual({
-        readOnly: true, approval: "external", untrustedReadLock: "refuse", dailySendLimit: 5,
-        allowedRecipients: ["anyone@example.com", "boss@example.org"], authservId: "mx.example.com",
-      });
-      expect(tightenGuards(strict, {})).toEqual(strict);
-      expect(tightenGuards(strict, { allowedRecipients: [] })).toMatchObject({ allowedRecipients: strict.allowedRecipients });
-      expect(tightenGuards(strict, { allowedRecipients: ["leak@attacker.example"] })).toMatchObject({ allowedRecipients: strict.allowedRecipients });
-    });
-
-    it("tightenGuards takes a stricter incoming value", () => {
-      expect(tightenGuards({}, { draftsOnly: true, dailySendLimit: 3, allowedRecipients: ["a@example.com"], untrustedReadLock: "approval" }))
-        .toEqual({ draftsOnly: true, dailySendLimit: 3, allowedRecipients: ["a@example.com"], untrustedReadLock: "approval" });
-      expect(tightenGuards({ untrustedReadLock: "approval", dailySendLimit: 10 }, { untrustedReadLock: "refuse", dailySendLimit: 2, readOnly: true }))
-        .toEqual({ untrustedReadLock: "refuse", dailySendLimit: 2, readOnly: true });
-      expect(tightenGuards({}, { authservId: "mx.attacker.example" })).toEqual({});
-    });
-
-    it("replaceAccount keeps the guards and takes the new connection details", () => {
+    it("addAccount refuses an existing alias and points at accounts.json", () => {
       manager.addAccount("work", { provider: "gmail", email: "old@example.com", ...strict });
-      const merged = manager.replaceAccount("work", { provider: "gmail", email: "new@example.com", dailySendLimit: 100 });
-      expect(merged).toEqual({ provider: "gmail", email: "new@example.com", ...strict });
-      expect(new AccountManager(tempDir).getAccount("work")).toEqual(merged);
-      expect(() => manager.replaceAccount("nope", { provider: "gmail", email: "x@example.com" })).toThrow("not found");
+      expect(() => manager.addAccount("work", { provider: "gmail", email: "new@example.com" })).toThrow(/already exists.*edit accounts.json/);
+      expect(manager.getAccount("work")).toEqual({ provider: "gmail", email: "old@example.com", ...strict });
     });
 
     it("removeAccount refuses while any guard is set, and says to edit accounts.json", () => {
       manager.addAccount("work", { provider: "gmail", email: "u@example.com", ...strict });
-      expect(() => manager.removeAccount("work")).toThrow(/safety settings \(readOnly, allowedRecipients, dailySendLimit, approval, untrustedReadLock\).*Edit accounts.json/);
+      expect(() => manager.removeAccount("work")).toThrow(/safety settings \(readOnly, allowedRecipients, dailySendLimit, approval, untrustedReadLock, authservId, trustedSenders\).*Edit accounts.json/);
       expect(manager.listAccounts().work).toBeDefined();
       manager.addAccount("open", { provider: "gmail", email: "o@example.com", allowedRecipients: [] });
       manager.removeAccount("open");
       expect(manager.listAccounts().open).toBeUndefined();
       expect(hasGuards({})).toBe(false);
       expect(hasGuards({ draftsOnly: true })).toBe(true);
+      expect(hasGuards({ trustedSenders: ["x@example.net"] })).toBe(true);
+      expect(hasGuards({ authservId: "mx.example.com" })).toBe(true);
     });
   });
 

@@ -1,6 +1,6 @@
 import { registerTool } from "./registry.js";
 import { clearSendLimit } from "./write.js";
-import type { AccountConfig, AccountGuards } from "../accounts.js";
+import { guardNames, hasGuards, type AccountGuards } from "../accounts.js";
 
 registerTool(
   {
@@ -22,6 +22,8 @@ registerTool(
       if (config.dailySendLimit !== undefined) flags.push(`daily send limit: ${config.dailySendLimit}`);
       if (config.approval) flags.push(`approval: ${config.approval}`);
       if (config.untrustedReadLock) flags.push(`untrusted-read lock: ${config.untrustedReadLock}`);
+      if (config.trustedSenders?.length) flags.push(`trusted senders: ${config.trustedSenders.join(", ")}`);
+      if (config.authservId) flags.push(`authserv-id: ${config.authservId}`);
       return `- **${alias}** (${config.provider}): ${config.email}${flags.length ? ` [${flags.join("; ")}]` : ""}`;
     });
     return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -31,7 +33,7 @@ registerTool(
 registerTool(
   {
     name: "authenticate",
-    description: "Add a new email account, or re-authenticate an existing alias (its safety settings are kept and can only be tightened). For Gmail: opens a browser for OAuth. For IMAP/JMAP: stores encrypted credentials. Sensitive fields (username, password) can also be set via environment variables.",
+    description: "Add a new email account. Refuses an alias that already exists (edit accounts.json or use reauth). For Gmail: opens a browser for OAuth. For IMAP/JMAP: stores encrypted credentials. Sensitive fields (username, password) can also be set via environment variables.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -67,24 +69,21 @@ registerTool(
     if (args.approval === "external") guards.approval = "external";
     if (args.untrusted_read_lock === "approval" || args.untrusted_read_lock === "refuse") guards.untrustedReadLock = args.untrusted_read_lock;
 
-    // An alias that already exists is re-authenticated in place. Its guards
-    // survive: they are merged so they can only stay or tighten.
+    // An existing alias is never touched from here: that would let a session
+    // swap the address, provider or host under its safety settings.
     const existing = ctx.accountManager.listAccounts()[alias];
-    const store = (config: AccountConfig): string => {
-      if (!existing) {
-        ctx.accountManager.addAccount(alias, config);
-        return "";
-      }
-      ctx.accountManager.replaceAccount(alias, config);
-      return " Existing safety settings were kept (they can only be tightened from here).";
-    };
+    if (existing) {
+      return {
+        content: [{ type: "text", text: `Refused: account "${alias}" already exists${hasGuards(existing) ? ` and has safety settings (${guardNames(existing)})` : ""}. Nothing about it can be changed from here. Use reauth to refresh a Gmail token, or edit accounts.json.` }],
+        isError: true,
+      };
+    }
 
     if (provider === "gmail") {
-      const note = store({ provider: "gmail", email, ...guards });
+      ctx.accountManager.addAccount(alias, { provider: "gmail", email, ...guards });
       const { authenticateGmail } = await import("../auth/gmail-oauth.js");
       await authenticateGmail(ctx.accountManager.getConfigDir(), alias);
-      ctx.clearProviderCache?.(alias);
-      return { content: [{ type: "text", text: `Gmail account "${alias}" (${email}) authenticated successfully.${note}` }] };
+      return { content: [{ type: "text", text: `Gmail account "${alias}" (${email}) authenticated successfully.` }] };
     }
 
     if (provider === "imap") {
@@ -104,11 +103,10 @@ registerTool(
         return { content: [{ type: "text", text: "IMAP accounts require a passphrase for credential encryption. Set MAILBOX_MCP_PASSPHRASE in the server environment." }], isError: true };
       }
 
-      const note = store({ provider: "imap", email, host, port, smtpHost, smtpPort, ...guards });
+      ctx.accountManager.addAccount(alias, { provider: "imap", email, host, port, smtpHost, smtpPort, ...guards });
       const { encryptCredentials } = await import("../auth/imap-auth.js");
       encryptCredentials(ctx.accountManager.getConfigDir(), alias, { username, password }, passphrase);
-      ctx.clearProviderCache?.(alias);
-      return { content: [{ type: "text", text: `IMAP account "${alias}" (${email}) configured. Credentials encrypted.${note}` }] };
+      return { content: [{ type: "text", text: `IMAP account "${alias}" (${email}) configured. Credentials encrypted.` }] };
     }
 
     if (provider === "jmap") {
@@ -142,11 +140,10 @@ registerTool(
 
       const config: any = { provider: "jmap" as const, email, host, ...guards };
       if (sessionUrl) config.sessionUrl = sessionUrl;
-      const note = store(config);
+      ctx.accountManager.addAccount(alias, config);
       const { encryptJmapCredentials } = await import("../auth/jmap-auth.js");
       encryptJmapCredentials(ctx.accountManager.getConfigDir(), alias, { username, password }, passphrase);
-      ctx.clearProviderCache?.(alias);
-      return { content: [{ type: "text", text: `JMAP account "${alias}" (${email}) configured. Credentials encrypted.${note}` }] };
+      return { content: [{ type: "text", text: `JMAP account "${alias}" (${email}) configured. Credentials encrypted.` }] };
     }
 
     return { content: [{ type: "text", text: `Unknown provider: ${provider}` }], isError: true };

@@ -223,7 +223,7 @@ registerTool(
         sections.push(`## ${alias}\n\n(no results)`);
         continue;
       }
-      await noteSenders(alias, lookupAccount(ctx, alias), () => ctx.getProvider(alias), "multi_account_search", results.map((m) => ({ from: m.from, auth: m.auth })));
+      noteSenders(alias, lookupAccount(ctx, alias), "multi_account_search", results.map((m) => ({ from: m.from, auth: m.auth })));
       const lines = results.map((m) =>
         `- **${m.id}** | ${ctx.fence.sender(m)} | ${ctx.fence.content(m.subject, "subject")} (${m.date})`
       );

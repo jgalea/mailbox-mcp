@@ -26,8 +26,24 @@ export function canonicalize(path: string): string {
   return probe === absolute ? realBase : join(realBase, absolute.slice(probe.length));
 }
 
+// The config and log directories hold credentials, the approval queue and the
+// send log. Nothing the model can call may write there, whatever the save
+// allowlist says: a downloaded attachment named accounts.json or sends.jsonl
+// would otherwise rewrite the guards.
+export function protectedDirs(): string[] {
+  const home = join(homedir(), ".mailbox-mcp");
+  return [process.env.MAILBOX_MCP_CONFIG_DIR || home, process.env.MAILBOX_MCP_LOG_DIR || home].map(canonicalize);
+}
+
+export function isInsideProtectedDir(resolvedPath: string): boolean {
+  return protectedDirs().some((base) => resolvedPath === base || resolvedPath.startsWith(base + "/"));
+}
+
 export function validateSavePath(dir: string): void {
   const resolved = canonicalize(dir);
+  if (isInsideProtectedDir(resolved)) {
+    throw new Error(`Save directory "${dir}" is inside the mailbox-mcp config or log directory, which holds credentials and safety state. Refusing to write there.`);
+  }
   const isAllowed = ALLOWED_BASE_DIRS.some((base) => {
     const resolvedBase = canonicalize(base);
     return resolved === resolvedBase || resolved.startsWith(resolvedBase + "/");

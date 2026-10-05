@@ -9,6 +9,7 @@ import { recordSend } from "../src/sendlog.js";
 import type { MailProvider } from "../src/providers/interface.js";
 
 let dir: string;
+let attDir: string;
 let provider: MailProvider;
 let output: string[];
 let terminal: Terminal & { write: ReturnType<typeof vi.fn>; readLine: ReturnType<typeof vi.fn>; close: ReturnType<typeof vi.fn> };
@@ -39,6 +40,7 @@ function run(argv: string[], overrides: { terminal?: Terminal; now?: number } = 
 
 beforeEach(() => {
   dir = mkdtempSync(join(tmpdir(), "mbx-cli-"));
+  attDir = mkdtempSync(join(tmpdir(), "mbx-cli-att-"));
   process.env.MAILBOX_MCP_CONFIG_DIR = dir;
   process.env.MAILBOX_MCP_LOG_DIR = dir;
   configure();
@@ -60,6 +62,7 @@ afterEach(() => {
   delete process.env.MAILBOX_MCP_CONFIG_DIR;
   delete process.env.MAILBOX_MCP_LOG_DIR;
   rmSync(dir, { recursive: true, force: true });
+  rmSync(attDir, { recursive: true, force: true });
 });
 
 const sent = () => vi.mocked(provider.sendMessage).mock.calls.length + vi.mocked(provider.replyToMessage).mock.calls.length
@@ -78,7 +81,7 @@ describe("mailbox-mcp approve", () => {
   });
 
   it("prints the whole message, sends exactly that on yes, records it and removes the file", async () => {
-    const attachment = join(dir, "report.pdf");
+    const attachment = join(attDir, "report.pdf");
     writeFileSync(attachment, "%PDF-1.4 hello");
     const spec = queueSend({ ...base, attachments: [{ path: attachment, name: "report.pdf", size: 14 }] });
     const code = await run(["approve", spec.id]);
@@ -201,7 +204,7 @@ describe("mailbox-mcp approve", () => {
   });
 
   it("revalidates attachments and refuses when one changed size or vanished", async () => {
-    const attachment = join(dir, "report.pdf");
+    const attachment = join(attDir, "report.pdf");
     writeFileSync(attachment, "%PDF-1.4 hello");
     const changed = queueSend({ ...base, attachments: [{ path: attachment, name: "report.pdf", size: 14 }] });
     writeFileSync(attachment, "%PDF-1.4 hello, now with more bytes");
@@ -215,6 +218,15 @@ describe("mailbox-mcp approve", () => {
     expect(sent()).toBe(0);
     expect(readPending(changed.id)).toBeDefined();
     expect(readPending(gone.id)).toBeDefined();
+  });
+
+  it("refuses an attachment that lives inside the config or log directory", async () => {
+    const secret = join(dir, "accounts.json");
+    const spec = queueSend({ ...base, attachments: [{ path: secret, name: "accounts.json", size: 10 }] });
+    expect(await run(["approve", spec.id])).toBe(1);
+    expect(printed()).toMatch(/inside the mailbox-mcp config or log directory/);
+    expect(sent()).toBe(0);
+    expect(terminal.readLine).not.toHaveBeenCalled();
   });
 
   it("replays reply, forward and draft sends through the matching provider call", async () => {

@@ -18,6 +18,7 @@ import "../../src/tools/gmail-only.js";
 
 const STRANGER = "Stranger <stranger@example.net>";
 const FRIEND = "Friend <friend@example.net>";
+const TRUSTED = ["friend@example.net", "@partner.example"];
 
 function domainOf(from: string): string {
   return senderAddress(from)!.split("@")[1];
@@ -25,8 +26,8 @@ function domainOf(from: string): string {
 function pass(domain: string, authserv = "mx.google.com"): string {
   return `${authserv};\n       dkim=pass header.i=@${domain} header.s=sel header.b=abc;\n       spf=pass (google.com: domain of x designates 1.2.3.4 as permitted sender) smtp.mailfrom=${domain};\n       dmarc=pass (p=NONE sp=NONE dis=NONE) header.from=${domain}`;
 }
-function authFor(from: string, overrides: Partial<SenderAuth> = {}): SenderAuth {
-  return { authenticationResults: [pass(domainOf(from))], sent: false, ...overrides };
+function authFor(from: string): SenderAuth {
+  return { authenticationResults: [pass(domainOf(from))] };
 }
 
 type Msg = { from: string; auth?: SenderAuth };
@@ -43,7 +44,7 @@ function createMockProvider(m: Msg = { from: STRANGER, auth: authFor(STRANGER) }
   return {
     type: "gmail",
     capabilities: { threads: true, filters: true, templates: true, signatures: true, vacation: true, unsubscribe: true, attachments: true, inboxSummary: true },
-    gmailApi: { users: { messages: { get: vi.fn().mockResolvedValue({ data: { labelIds: m.auth?.sent ? ["SENT"] : ["INBOX"], payload: { headers: [{ name: "List-Unsubscribe", value: "<https://example.net/u>" }, { name: "From", value: m.from }, ...authHeaders] } } }) } } },
+    gmailApi: { users: { messages: { get: vi.fn().mockResolvedValue({ data: { labelIds: ["INBOX"], payload: { headers: [{ name: "List-Unsubscribe", value: "<https://example.net/u>" }, { name: "From", value: m.from }, ...authHeaders] } } }) } } },
     searchMessages: vi.fn().mockResolvedValue([summary(m)]),
     readMessage: vi.fn().mockResolvedValue(message(m)),
     readThread: vi.fn().mockResolvedValue({ id: "t1", subject: "Hi", messages: [message(m)] }),
@@ -55,7 +56,6 @@ function createMockProvider(m: Msg = { from: STRANGER, auth: authFor(STRANGER) }
     replyToMessage: vi.fn().mockResolvedValue("reply-1"),
     createDraft: vi.fn().mockResolvedValue("draft-1"),
     hasCorrespondedWith: vi.fn().mockResolvedValue(true),
-    hasSentTo: vi.fn().mockResolvedValue(false),
   } as unknown as MailProvider;
 }
 
@@ -73,7 +73,7 @@ describe("untrustedReadLock", () => {
     process.env.MAILBOX_MCP_CONFIG_DIR = dir;
     clearTaint();
     clearSendLimit("personal");
-    configs = { personal: { provider: "gmail", email: "me@example.com", untrustedReadLock: "approval" } };
+    configs = { personal: { provider: "gmail", email: "me@example.com", untrustedReadLock: "approval", trustedSenders: TRUSTED } };
     provider = createMockProvider();
     ctx = {
       accountManager: {
@@ -101,45 +101,42 @@ describe("untrustedReadLock", () => {
     provider = createMockProvider(m);
     ctx.getProvider = vi.fn().mockReturnValue(provider);
   };
-  const knowFriend = () => recordSend("personal", "send_email", ["friend@example.net"]);
 
   describe("what sets the taint", () => {
-    it("authenticated mail from a sender the account never wrote to", async () => {
+    it("authenticated mail from a sender not in trustedSenders", async () => {
       await read();
       expect(isTainted("personal")).toMatchObject({ sender: "stranger@example.net", tool: "read_email" });
-      expect(provider.hasSentTo).toHaveBeenCalledWith("stranger@example.net");
     });
 
-    it("not authenticated mail from a sender in the local send log, and the provider is not asked", async () => {
-      knowFriend();
-      useMessage({ from: FRIEND, auth: authFor(FRIEND) });
-      await read();
-      expect(isTainted("personal")).toBeUndefined();
-      expect(provider.hasSentTo).not.toHaveBeenCalled();
+    it("not authenticated mail from a sender in trustedSenders, by address or by @domain", async () => {
+      for (const from of [FRIEND, "Anyone <someone@partner.example>", "FRIEND@Example.net"]) {
+        clearTaint();
+        useMessage({ from, auth: authFor(from) });
+        await read();
+        expect(isTainted("personal"), from).toBeUndefined();
+      }
     });
 
-    it("not authenticated mail from a sender the provider's Sent folder knows, and the answer is cached per process", async () => {
-      useMessage({ from: FRIEND, auth: authFor(FRIEND) });
-      vi.mocked(provider.hasSentTo!).mockResolvedValue(true);
-      await read();
-      await read();
-      expect(isTainted("personal")).toBeUndefined();
-      expect(provider.hasSentTo).toHaveBeenCalledTimes(1);
+    it("with no trustedSenders configured, every third-party message taints, DMARC pass or not", async () => {
+      for (const trusted of [undefined, []]) {
+        clearTaint();
+        configs.personal = { provider: "gmail", email: "me@example.com", untrustedReadLock: "approval", trustedSenders: trusted };
+        useMessage({ from: FRIEND, auth: authFor(FRIEND) });
+        await read();
+        expect(isTainted("personal"), JSON.stringify(trusted)).toBeDefined();
+      }
     });
 
-    it("a known sender without authentication is untrusted: a From header on its own proves nothing", async () => {
-      knowFriend();
-      for (const auth of [undefined, { authenticationResults: [], sent: false }]) {
+    it("a trusted sender without authentication is untrusted: a From header on its own proves nothing", async () => {
+      for (const auth of [undefined, { authenticationResults: [] }]) {
         clearTaint();
         useMessage({ from: FRIEND, auth });
         await read();
         expect(isTainted("personal"), JSON.stringify(auth)).toMatchObject({ sender: "friend@example.net" });
-        expect(provider.hasSentTo).not.toHaveBeenCalled();
       }
     });
 
-    it("a known sender whose DMARC evidence is wrong in any way is untrusted", async () => {
-      knowFriend();
+    it("a trusted sender whose DMARC evidence is wrong in any way is untrusted", async () => {
       const cases: Record<string, string[]> = {
         "dmarc=fail": [pass("example.net").replace("dmarc=pass", "dmarc=fail")],
         "dmarc=none": [pass("example.net").replace("dmarc=pass", "dmarc=none")],
@@ -153,34 +150,29 @@ describe("untrustedReadLock", () => {
       };
       for (const [name, results] of Object.entries(cases)) {
         clearTaint();
-        useMessage({ from: FRIEND, auth: { authenticationResults: results, sent: false } });
+        useMessage({ from: FRIEND, auth: { authenticationResults: results } });
         await read();
         expect(isTainted("personal"), name).toBeDefined();
-        expect(provider.hasSentTo, name).not.toHaveBeenCalled();
       }
     });
 
-    it("the account's own address is trusted only for mail that is actually in Sent", async () => {
-      useMessage({ from: "Me <me@example.com>", auth: { authenticationResults: [pass("example.com")], sent: false } });
+    it("the account's own address and the local send log count for nothing: only the list and DMARC do", async () => {
+      recordSend("personal", "send_email", ["stranger@example.net"]);
+      await read();
+      expect(isTainted("personal")).toBeDefined();
+      clearTaint();
+      useMessage({ from: "Me <me@example.com>", auth: { authenticationResults: [pass("example.com")] } });
       await read();
       expect(isTainted("personal")).toMatchObject({ sender: "me@example.com" });
       clearTaint();
-      useMessage({ from: "Me <me@example.com>", auth: { authenticationResults: [], sent: true } });
-      await read();
-      expect(isTainted("personal")).toBeUndefined();
-      expect(provider.hasSentTo).not.toHaveBeenCalled();
-    });
-
-    it("mail the account itself sent is trusted whoever it is addressed from", async () => {
-      useMessage({ from: "Alias <alias@example.org>", auth: { authenticationResults: [], sent: true } });
+      configs.personal = { ...configs.personal, trustedSenders: ["me@example.com"] };
       await read();
       expect(isTainted("personal")).toBeUndefined();
     });
 
     it("on IMAP and JMAP nothing is authenticated until authservId is configured", async () => {
-      knowFriend();
-      configs.personal = { provider: "imap", email: "me@example.com", host: "h", port: 993, smtpHost: "s", smtpPort: 587, untrustedReadLock: "approval" };
-      useMessage({ from: FRIEND, auth: { authenticationResults: [pass("example.net", "mx1.messagingengine.com")], sent: false } });
+      configs.personal = { provider: "imap", email: "me@example.com", host: "h", port: 993, smtpHost: "s", smtpPort: 587, untrustedReadLock: "approval", trustedSenders: TRUSTED };
+      useMessage({ from: FRIEND, auth: { authenticationResults: [pass("example.net", "mx1.messagingengine.com")] } });
       await read();
       expect(isTainted("personal")).toBeDefined();
       clearTaint();
@@ -189,32 +181,7 @@ describe("untrustedReadLock", () => {
       expect(isTainted("personal")).toBeUndefined();
     });
 
-    it("received mail from the sender does not make them trusted", async () => {
-      vi.mocked(provider.hasCorrespondedWith!).mockResolvedValue(true);
-      vi.mocked(provider.hasSentTo!).mockResolvedValue(false);
-      await read();
-      expect(isTainted("personal")).toBeDefined();
-    });
-
-    it("a failed Sent-folder lookup counts as untrusted", async () => {
-      vi.mocked(provider.hasSentTo!).mockRejectedValue(new Error("quota"));
-      await read();
-      expect(isTainted("personal")).toBeDefined();
-    });
-
-    it("a provider that cannot check Sent falls back to the local log only", async () => {
-      useMessage({ from: FRIEND, auth: authFor(FRIEND) });
-      delete (provider as any).hasSentTo;
-      await read();
-      expect(isTainted("personal")).toBeDefined();
-      clearTaint();
-      knowFriend();
-      await read();
-      expect(isTainted("personal")).toBeUndefined();
-    });
-
-    it("a From header a parser could read two ways is untrusted even when it names a known address", async () => {
-      knowFriend();
+    it("a From header a parser could read two ways is untrusted even when it names a trusted address", async () => {
       for (const from of [
         "friend@example.net, attacker@example.org",
         "\"<friend@example.net>\" <attacker@example.org>",
@@ -227,18 +194,16 @@ describe("untrustedReadLock", () => {
         "undisclosed",
       ]) {
         clearTaint();
-        useMessage({ from, auth: { authenticationResults: [pass("example.net")], sent: false } });
+        useMessage({ from, auth: { authenticationResults: [pass("example.net")] } });
         await read();
         expect(isTainted("personal"), JSON.stringify(from)).toBeDefined();
-        expect(provider.hasSentTo, JSON.stringify(from)).not.toHaveBeenCalled();
       }
     });
 
-    it("plain forms of a known, authenticated address are trusted", async () => {
-      knowFriend();
+    it("plain forms of a trusted, authenticated address are trusted", async () => {
       for (const from of ["friend@example.net", "Friend <friend@example.net>", "\"Friend, Jr.\" <FRIEND@Example.net>", " <friend@example.net> "]) {
         clearTaint();
-        useMessage({ from, auth: { authenticationResults: [pass("example.net")], sent: false } });
+        useMessage({ from, auth: { authenticationResults: [pass("example.net")] } });
         await read();
         expect(isTainted("personal"), from).toBeUndefined();
       }
@@ -263,8 +228,7 @@ describe("untrustedReadLock", () => {
       }
     });
 
-    it("every rendering tool passes the provider's evidence through, so a known authenticated sender does not taint", async () => {
-      knowFriend();
+    it("every rendering tool passes the provider's evidence through, so a trusted authenticated sender does not taint", async () => {
       useMessage({ from: FRIEND, auth: authFor(FRIEND) });
       for (const [tool, args] of [
         ["search_emails", { account: "personal", query: "x" }],
@@ -281,21 +245,21 @@ describe("untrustedReadLock", () => {
     });
 
     it("exports taint even when the sender would have been trusted, since the content leaves the fence", async () => {
-      knowFriend();
       useMessage({ from: FRIEND, auth: authFor(FRIEND) });
       await handleToolCall("export_email", { account: "personal", message_id: "m1", save_to: saveDir }, ctx);
       expect(isTainted("personal")?.tool).toBe("export_email");
     });
 
     it("an error while deciding counts as untrusted", async () => {
-      ctx.getProvider = vi.fn().mockReturnValueOnce(provider).mockImplementation(() => { throw new Error("connection lost"); });
+      useMessage({ from: FRIEND, auth: authFor(FRIEND) });
+      Object.defineProperty(configs.personal, "trustedSenders", { get() { throw new Error("boom"); } });
       await read();
       expect(isTainted("personal")).toBeDefined();
     });
 
     it("multi_account_search taints only the account whose results had the untrusted sender", async () => {
-      configs.work = { provider: "gmail", email: "work@example.com", untrustedReadLock: "refuse" };
-      const workProvider = createMockProvider({ from: "Work <work@example.com>", auth: { authenticationResults: [], sent: true } });
+      configs.work = { provider: "gmail", email: "work@example.com", untrustedReadLock: "refuse", trustedSenders: ["@partner.example"] };
+      const workProvider = createMockProvider({ from: "Partner <p@partner.example>", auth: { authenticationResults: [pass("partner.example")] } });
       ctx.getProvider = vi.fn().mockImplementation((alias: string) => (alias === "work" ? workProvider : provider));
       await handleToolCall("multi_account_search", { query: "x" }, ctx);
       expect(isTainted("personal")?.tool).toBe("multi_account_search");
@@ -307,7 +271,6 @@ describe("untrustedReadLock", () => {
       await read();
       await handleToolCall("export_email", { account: "personal", message_id: "m1", save_to: saveDir }, ctx);
       expect(isTainted("personal")).toBeUndefined();
-      expect(provider.hasSentTo).not.toHaveBeenCalled();
     });
 
     it("is per account", async () => {
@@ -441,45 +404,43 @@ describe("dmarcPasses", () => {
 });
 
 describe("isTrustedSender", () => {
-  let dir: string;
-  const config: AccountConfig = { provider: "gmail", email: "me@example.com" };
+  const config: AccountConfig = { provider: "gmail", email: "me@example.com", trustedSenders: ["x@example.net", "@partner.example"] };
   const authed = (from: string) => ({ from, auth: authFor(from) });
 
+  it("trusts only a listed address with a passing DMARC verdict", () => {
+    expect(isTrustedSender(config, authed("x@example.net"))).toBe(true);
+    expect(isTrustedSender(config, authed("Someone <ANY@partner.example>"))).toBe(true);
+    expect(isTrustedSender(config, authed("y@example.net"))).toBe(false);
+    expect(isTrustedSender(config, authed("x@sub.partner.example"))).toBe(false);
+    expect(isTrustedSender(config, { from: "x@example.net" })).toBe(false);
+    expect(isTrustedSender(config, { from: "x@example.net", auth: { authenticationResults: [pass("attacker.example")] } })).toBe(false);
+    expect(isTrustedSender({ ...config, trustedSenders: [] }, authed("x@example.net"))).toBe(false);
+    expect(isTrustedSender(undefined, authed("x@example.net"))).toBe(false);
+  });
+
+  it("treats an empty or unparsable sender as untrusted", () => {
+    expect(isTrustedSender(config, { from: "", auth: { authenticationResults: [pass("example.net")] } })).toBe(false);
+    expect(isTrustedSender(config, { from: "x@example.net, me@example.com", auth: { authenticationResults: [pass("example.net")] } })).toBe(false);
+  });
+});
+
+describe("the local send log (used by the new-recipient check) matches whole addresses only", () => {
+  let dir: string;
   beforeEach(() => {
-    dir = mkdtempSync(join(tmpdir(), "mbx-trust-"));
+    dir = mkdtempSync(join(tmpdir(), "mbx-sendlog-"));
     process.env.MAILBOX_MCP_LOG_DIR = dir;
-    clearTaint();
   });
   afterEach(() => {
     delete process.env.MAILBOX_MCP_LOG_DIR;
     rmSync(dir, { recursive: true, force: true });
   });
 
-  it("treats an empty or unparsable sender as untrusted without asking the provider", async () => {
-    const p = { hasSentTo: vi.fn().mockResolvedValue(true) } as unknown as MailProvider;
-    expect(await isTrustedSender("a", config, p, { from: "", auth: { authenticationResults: [pass("example.net")], sent: false } })).toBe(false);
-    expect(await isTrustedSender("a", config, p, { from: "x@example.net, me@example.com", auth: { authenticationResults: [pass("example.net")], sent: false } })).toBe(false);
-    expect(p.hasSentTo).not.toHaveBeenCalled();
-  });
-
-  it("does not let one account's send log vouch for another", async () => {
-    recordSend("other", "send_email", ["x@example.net"]);
-    const p = { hasSentTo: vi.fn().mockResolvedValue(false) } as unknown as MailProvider;
-    expect(await isTrustedSender("a", config, p, authed("x@example.net"))).toBe(false);
-    expect(await isTrustedSender("other", config, p, authed("x@example.net"))).toBe(true);
-  });
-
-  it("does not cache a failed lookup", async () => {
-    const p = { hasSentTo: vi.fn().mockRejectedValueOnce(new Error("down")).mockResolvedValueOnce(true) } as unknown as MailProvider;
-    expect(await isTrustedSender("a", config, p, authed("x@example.net"))).toBe(false);
-    expect(await isTrustedSender("a", config, p, authed("x@example.net"))).toBe(true);
-  });
-
-  it("the local send log matches whole addresses only", () => {
+  it("does not let xa@example.com vouch for a@example.co", () => {
     recordSend("a", "send_email", ["xa@example.com", "Friend <friend@example.net>"]);
     expect(sendlogHasSentTo("a", "a@example.co")).toBe(false);
     expect(sendlogHasSentTo("a", "a@example.com")).toBe(false);
     expect(sendlogHasSentTo("a", "xa@example.com")).toBe(true);
     expect(sendlogHasSentTo("a", "FRIEND@example.net")).toBe(true);
+    expect(sendlogHasSentTo("other", "xa@example.com")).toBe(false);
   });
 });

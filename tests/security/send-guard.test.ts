@@ -25,6 +25,34 @@ afterEach(() => {
   rmSync(logDir, { recursive: true, force: true });
 });
 
+describe("recipients must each be one plain address", () => {
+  it("refuses a comma-joined or double-angled recipient before any other check, naming it", async () => {
+    for (const bad of [
+      "boss@example.com, leak@attacker.example",
+      "Boss <boss@example.com>, Leak <leak@attacker.example>",
+      "\"<boss@example.com>\" <leak@attacker.example>",
+      "boss@example.com <leak@attacker.example>",
+      "le​ak@attacker.example",
+      "nobody",
+    ]) {
+      const err = await checkOutgoing({
+        account, config: { ...config, allowedRecipients: ["boss@example.com"] }, provider: provider(true),
+        recipients: [bad], confirmNewRecipient: true,
+      });
+      expect(err, bad).toMatch(/each recipient must be a single plain address/);
+      expect(err, bad).toContain(bad.replace(/​/g, "​"));
+    }
+  });
+
+  it("accepts the usual single-address forms", async () => {
+    const err = await checkOutgoing({
+      account, config: { ...config, allowedRecipients: ["boss@example.com"] }, provider: provider(true),
+      recipients: ["boss@example.com", "Boss <BOSS@example.com>", "\"Boss, The\" <boss@example.com>"], confirmNewRecipient: true,
+    });
+    expect(err).toBeNull();
+  });
+});
+
 describe("recipient allowlist", () => {
   it("matches exact addresses and @domain patterns, case-insensitively", () => {
     const list = ["bob@example.com", "@partner.example"];

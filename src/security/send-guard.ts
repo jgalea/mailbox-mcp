@@ -1,6 +1,6 @@
 import type { AccountConfig } from "../accounts.js";
 import type { MailProvider } from "../providers/interface.js";
-import { extractAddress } from "../providers/headers.js";
+import { extractAddress, strictAddress } from "../providers/headers.js";
 import { hasSentTo, sendsInLastDay } from "../sendlog.js";
 
 export const DEFAULT_DAILY_SEND_LIMIT = 100;
@@ -54,6 +54,13 @@ async function isKnownRecipient(check: OutgoingCheck, address: string): Promise<
 // send_template, create_draft) runs through here.
 export async function checkOutgoing(check: OutgoingCheck): Promise<string | null> {
   const recipients = check.recipients.map((r) => r.trim()).filter(Boolean);
+  // A value like "boss@example.com, leak@attacker.example" or two angle
+  // groups would be checked as its first address and delivered to both, so
+  // every recipient has to be one plain address before anything else runs.
+  const malformed = recipients.filter((r) => strictAddress(r) === null);
+  if (malformed.length > 0) {
+    return `Refused: each recipient must be a single plain address (user@example.com or Name <user@example.com>, one per entry). Not accepted: ${malformed.join(" | ")}.`;
+  }
   const allowlist = check.config?.allowedRecipients;
   if (allowlist && allowlist.length > 0) {
     const blocked = recipients.filter((r) => !isAllowedRecipient(r, allowlist));

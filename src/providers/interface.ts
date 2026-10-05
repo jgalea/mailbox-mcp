@@ -1,9 +1,7 @@
-/** What the provider can vouch for about a message's origin. Backs the untrusted-read lock. */
+/** What the receiving server recorded about a message's origin. Backs the untrusted-read lock. */
 export interface SenderAuth {
   /** Authentication-Results header values, topmost (the receiving server's) first. */
   authenticationResults: string[];
-  /** True when the account itself sent the message (Sent folder or SENT label). */
-  sent: boolean;
 }
 
 export interface EmailSummary {
@@ -163,8 +161,6 @@ export interface MailProvider {
   hasCorrespondedWith?(address: string): Promise<boolean>;
   /** To/Cc/Bcc of an existing draft, so send_draft can run the recipient guards. */
   getDraftRecipients?(draftId: string): Promise<string[]>;
-  /** Whether the account has ever sent a message to `address` (Sent folder only, received mail does not count). Used by the untrusted-read lock. */
-  hasSentTo?(address: string): Promise<boolean>;
   /** A string that changes whenever the draft's content or recipients change, so a queued send_draft stays bound to what was reviewed. */
   draftFingerprint?(draftId: string): Promise<string>;
 }

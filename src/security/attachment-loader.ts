@@ -2,6 +2,7 @@ import { readFileSync, statSync, realpathSync, existsSync } from "node:fs";
 import { basename } from "node:path";
 import type { Attachment } from "../providers/interface.js";
 import { stripCRLF } from "./validation.js";
+import { isInsideProtectedDir } from "./save-path.js";
 
 /** Gmail and most SMTP servers cap messages around 25 MB (pre base64). */
 export const MAX_ATTACHMENT_BYTES = 25 * 1024 * 1024;
@@ -69,6 +70,9 @@ export function loadAttachmentFromPath(path: string): Attachment {
     throw new Error(`Attachment not found: ${path}`);
   }
   const resolved = realpathSync(path);
+  if (isInsideProtectedDir(resolved)) {
+    throw new Error(`Attachment "${path}" is inside the mailbox-mcp config or log directory, which holds credentials and safety state. Refusing to attach it.`);
+  }
   const stats = statSync(resolved);
   if (!stats.isFile()) {
     throw new Error(`Attachment is not a regular file: ${path}`);

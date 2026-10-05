@@ -506,34 +506,30 @@ describe("JmapProvider from address", () => {
 });
 
 describe("JmapProvider untrusted-read lock support", () => {
-  it("hasSentTo narrows within the sent mailbox, then requires an exact To/Cc/Bcc address", async () => {
+  it("hasCorrespondedWith narrows with the contains filter, then requires an exact From/To/Cc/Bcc address", async () => {
     vi.clearAllMocks();
     const provider = new JmapProvider("fastmail.com", "test@fastmail.com", "testuser", "testpass");
-    const sentMailbox = mockApiResponse([
-      ["Mailbox/query", { ids: ["mbox-sent"] }, "0"],
-      ["Mailbox/get", { list: [{ id: "mbox-sent", name: "Sent", role: "sent" }] }, "1"],
-    ]);
     const candidates = (emails: any[]) => mockApiResponse([["Email/query", { ids: emails.map((e) => e.id) }, "0"], ["Email/get", { list: emails }, "1"]]);
     mockFetch
       .mockResolvedValueOnce(mockSessionResponse())
-      .mockResolvedValueOnce(sentMailbox)
       .mockResolvedValueOnce(candidates([
         { id: "e1", to: [{ email: "xfriend@example.net" }] },
-        { id: "e2", to: [{ email: "o@example.org" }], cc: [{ email: "FRIEND@example.net" }] },
+        { id: "e2", from: [{ email: "FRIEND@example.net" }], to: [{ email: "o@example.org" }] },
       ]));
-    expect(await provider.hasSentTo("friend@example.net")).toBe(true);
-    const calls = JSON.parse(mockFetch.mock.calls[2][1].body).methodCalls;
+    expect(await provider.hasCorrespondedWith("friend@example.net")).toBe(true);
+    const calls = JSON.parse(mockFetch.mock.calls[1][1].body).methodCalls;
     expect(calls[0][0]).toBe("Email/query");
-    expect(calls[0][1].filter).toEqual({ operator: "AND", conditions: [{ inMailbox: "mbox-sent" }, { operator: "OR", conditions: [{ to: "friend@example.net" }, { cc: "friend@example.net" }, { bcc: "friend@example.net" }] }] });
+    expect(calls[0][1].filter).toEqual({ operator: "OR", conditions: [{ from: "friend@example.net" }, { to: "friend@example.net" }] });
     expect(calls[0][1].limit).toBe(50);
     expect(calls[1][0]).toBe("Email/get");
-    expect(calls[1][1].properties).toEqual(["id", "to", "cc", "bcc"]);
+    expect(calls[1][1].properties).toEqual(["id", "from", "to", "cc", "bcc"]);
 
-    mockFetch.mockResolvedValueOnce(sentMailbox).mockResolvedValueOnce(candidates([{ id: "e1", to: [{ email: "xfriend@example.net" }] }]));
-    expect(await provider.hasSentTo("friend@example.net")).toBe(false);
+    mockFetch.mockResolvedValueOnce(candidates([{ id: "e1", to: [{ email: "xfriend@example.net" }] }]));
+    expect(await provider.hasCorrespondedWith("friend@example.net")).toBe(false);
+    expect((provider as any).hasSentTo).toBeUndefined();
   });
 
-  it("asks for Authentication-Results and the sent mailbox in the same round trip and carries both as evidence", async () => {
+  it("asks for Authentication-Results on every listing and carries it as evidence, with no mailbox lookups", async () => {
     vi.clearAllMocks();
     const provider = new JmapProvider("fastmail.com", "test@fastmail.com", "testuser", "testpass");
     mockFetch
@@ -544,14 +540,26 @@ describe("JmapProvider untrusted-read lock support", () => {
           { id: "e1", from: [{ email: "a@a.example" }], mailboxIds: { "mbox-sent": true }, "header:Authentication-Results:all": ["mx.example.com; dmarc=pass header.from=a.example", "mx.other.example; dmarc=none"] },
           { id: "e2", from: [{ email: "b@b.example" }], mailboxIds: { "mbox-inbox": true } },
         ] }, "1"],
-        ["Mailbox/query", { ids: ["mbox-sent"] }, "sent"],
       ]));
-    const [sent, inbox] = await provider.searchMessages("x");
-    expect(sent.auth).toEqual({ authenticationResults: ["mx.example.com; dmarc=pass header.from=a.example", "mx.other.example; dmarc=none"], sent: true });
-    expect(inbox.auth).toEqual({ authenticationResults: [], sent: false });
+    const [first, second] = await provider.searchMessages("x");
+    expect(first.auth).toEqual({ authenticationResults: ["mx.example.com; dmarc=pass header.from=a.example", "mx.other.example; dmarc=none"] });
+    expect(second.auth).toEqual({ authenticationResults: [] });
     const calls = JSON.parse(mockFetch.mock.calls[1][1].body).methodCalls;
+    expect(calls).toHaveLength(2);
     expect(calls[1][1].properties).toContain("header:Authentication-Results:all");
-    expect(calls[2]).toEqual(["Mailbox/query", { accountId: "u1234", filter: { role: "sent" } }, "sent"]);
+  });
+
+  it("sendDraft refuses a message that no longer carries $draft", async () => {
+    vi.clearAllMocks();
+    const provider = new JmapProvider("fastmail.com", "test@fastmail.com", "testuser", "testpass");
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(mockApiResponse([["Email/get", { list: [{ id: "e1", keywords: { $seen: true } }] }, "0"]]));
+    await expect(provider.sendDraft("e1")).rejects.toThrow(/not a draft/);
+    expect(mockFetch).toHaveBeenCalledTimes(2);
+    const calls = JSON.parse(mockFetch.mock.calls[1][1].body).methodCalls;
+    expect(calls[0][0]).toBe("Email/get");
+    expect(calls[0][1].properties).toEqual(["id", "keywords"]);
   });
 
   it("draftFingerprint changes with the blobId or recipients", async () => {

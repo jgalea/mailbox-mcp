@@ -103,10 +103,7 @@ function parseMessage(data: GmailMessage): EmailMessage {
     body: decoded.text,
     bodyIsHtml: decoded.html || undefined,
     attachments,
-    auth: {
-      authenticationResults: headers.filter((h) => h.name?.toLowerCase() === "authentication-results").map((h) => h.value ?? ""),
-      sent: (data.labelIds ?? []).includes("SENT"),
-    },
+    auth: { authenticationResults: headers.filter((h) => h.name?.toLowerCase() === "authentication-results").map((h) => h.value ?? "") },
   };
 }
 
@@ -118,7 +115,7 @@ function toSummary(msg: EmailMessage): EmailSummary {
   };
 }
 
-const SENT_MATCH_LIMIT = 50;
+const CORRESPONDENCE_MATCH_LIMIT = 50;
 
 export type GmailEncodeOptions = SendOptions & { inReplyTo?: string; references?: string };
 
@@ -503,24 +500,19 @@ export class GmailProvider implements MailProvider {
     return results;
   }
 
+  // Gmail's from:/to: operators match tokens rather than whole addresses, so
+  // the candidates are held to an exact address on their headers.
   async hasCorrespondedWith(address: string): Promise<boolean> {
-    const res = await this.gmail.users.messages.list({ userId: "me", q: `from:${address} OR to:${address}`, maxResults: 1 });
-    return (res.data.messages ?? []).length > 0;
-  }
-
-  // Gmail's to: operator matches tokens rather than whole addresses, so the
-  // candidates are held to an exact address on their To/Cc/Bcc headers.
-  async hasSentTo(address: string): Promise<boolean> {
-    const res = await this.gmail.users.messages.list({ userId: "me", q: `in:sent to:${address}`, maxResults: SENT_MATCH_LIMIT });
+    const res = await this.gmail.users.messages.list({ userId: "me", q: `from:${address} OR to:${address}`, maxResults: CORRESPONDENCE_MATCH_LIMIT });
     const ids = (res.data.messages ?? []).map((m: any) => m.id).filter(Boolean) as string[];
     if (ids.length === 0) return false;
     const needle = extractAddress(address);
     const found = await Promise.all(ids.map((id) => this.gmail.users.messages.get({
-      userId: "me", id, format: "metadata", metadataHeaders: ["To", "Cc", "Bcc"],
+      userId: "me", id, format: "metadata", metadataHeaders: ["From", "To", "Cc", "Bcc"],
     })));
     return found.some((m: any) => {
       const headers = m.data.payload?.headers ?? [];
-      return ["To", "Cc", "Bcc"].flatMap((h) => splitAddressList(getHeader(headers, h))).map(extractAddress).includes(needle);
+      return ["From", "To", "Cc", "Bcc"].flatMap((h) => splitAddressList(getHeader(headers, h))).map(extractAddress).includes(needle);
     });
   }
 

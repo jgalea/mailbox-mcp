@@ -140,12 +140,6 @@ export class JmapProvider implements MailProvider {
     return body.methodResponses;
   }
 
-  // Appended to every message-listing batch so the Sent mailbox id arrives in
-  // the same round trip; it costs no extra request.
-  private sentMailboxQuery(accountId: string): [string, any, string] {
-    return ["Mailbox/query", { accountId, filter: { role: "sent" } }, "sent"];
-  }
-
   async searchMessages(query: string, maxResults: number = 20, folder?: string): Promise<EmailSummary[]> {
     const session = await this.ensureSession();
     const filter: any = query ? { text: query } : {};
@@ -171,11 +165,9 @@ export class JmapProvider implements MailProvider {
         "#ids": { resultOf: "0", name: "Email/query", path: "/ids" },
         properties: ["id", "threadId", "from", "to", "subject", "preview", "receivedAt", "mailboxIds", "hasAttachment", AUTH_HEADER_PROP],
       }, "1"],
-      this.sentMailboxQuery(session.accountId),
     ]);
 
     const emails = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
-    const sentId = sentMailboxId(responses);
     return emails.map((e: any) => ({
       id: e.id,
       threadId: e.threadId,
@@ -186,7 +178,7 @@ export class JmapProvider implements MailProvider {
       date: e.receivedAt ?? "",
       labels: Object.keys(e.mailboxIds ?? {}),
       hasAttachments: e.hasAttachment ?? false,
-      auth: jmapAuth(e, sentId),
+      auth: jmapAuth(e),
     }));
   }
 
@@ -213,7 +205,6 @@ export class JmapProvider implements MailProvider {
         fetchTextBodyValues: true,
         fetchHTMLBodyValues: true,
       }, "0"],
-      this.sentMailboxQuery(session.accountId),
     ]);
 
     const list = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
@@ -231,7 +222,7 @@ export class JmapProvider implements MailProvider {
       cc: formatJmapAddresses(e.cc),
       bcc: formatJmapAddresses(e.bcc),
       replyTo: formatJmapAddress(e.replyTo?.[0]) || undefined,
-      auth: jmapAuth(e, sentMailboxId(responses)),
+      auth: jmapAuth(e),
       subject,
       snippet: e.preview ?? "",
       date: e.receivedAt ?? "",
@@ -266,14 +257,12 @@ export class JmapProvider implements MailProvider {
         fetchTextBodyValues: true,
         fetchHTMLBodyValues: true,
       }, "1"],
-      this.sentMailboxQuery(session.accountId),
     ]);
 
     const threads = responses.find((r: any) => r[0] === "Thread/get")?.[1]?.list ?? [];
     if (threads.length === 0) throw new Error(`Thread ${threadId} not found`);
 
     const emails = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
-    const sentId = sentMailboxId(responses);
     const messages: EmailMessage[] = emails.map((e: any) => {
       const decoded = extractJmapBody(e);
       return {
@@ -284,7 +273,7 @@ export class JmapProvider implements MailProvider {
         cc: formatJmapAddresses(e.cc),
         bcc: formatJmapAddresses(e.bcc),
         replyTo: formatJmapAddress(e.replyTo?.[0]) || undefined,
-        auth: jmapAuth(e, sentId),
+        auth: jmapAuth(e),
         subject: e.subject ?? "",
         snippet: e.preview ?? "",
         date: e.receivedAt ?? "",
@@ -341,11 +330,9 @@ export class JmapProvider implements MailProvider {
         "#ids": { resultOf: "0", name: "Email/query", path: "/ids" },
         properties: ["id", "threadId", "from", "to", "subject", "preview", "receivedAt", "mailboxIds", "hasAttachment", AUTH_HEADER_PROP],
       }, "1"],
-      this.sentMailboxQuery(session.accountId),
     ]);
 
     const emails = emailResponses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
-    const sentId = sentMailboxId(emailResponses);
     const recent = emails.map((e: any) => ({
       id: e.id,
       threadId: e.threadId,
@@ -356,7 +343,7 @@ export class JmapProvider implements MailProvider {
       date: e.receivedAt ?? "",
       labels: Object.keys(e.mailboxIds ?? {}),
       hasAttachments: e.hasAttachment ?? false,
-      auth: jmapAuth(e, sentId),
+      auth: jmapAuth(e),
     }));
 
     return {
@@ -672,40 +659,26 @@ export class JmapProvider implements MailProvider {
     }));
   }
 
+  // The JMAP from/to filters are "contains" matches (RFC 8621), so the
+  // candidates are fetched and held to an exact address.
   async hasCorrespondedWith(address: string): Promise<boolean> {
     const session = await this.ensureSession();
     const responses = await this.apiCall([
       ["Email/query", {
         accountId: session.accountId,
         filter: { operator: "OR", conditions: [{ from: address }, { to: address }] },
-        limit: 1,
-      }, "0"],
-    ]);
-    const ids = responses.find((r: any) => r[0] === "Email/query")?.[1]?.ids ?? [];
-    return ids.length > 0;
-  }
-
-  // The JMAP to/cc/bcc filters are "contains" matches (RFC 8621), so the
-  // candidates are fetched and held to an exact address.
-  async hasSentTo(address: string): Promise<boolean> {
-    const session = await this.ensureSession();
-    const sent = await this.findMailboxByRole("sent");
-    const responses = await this.apiCall([
-      ["Email/query", {
-        accountId: session.accountId,
-        filter: { operator: "AND", conditions: [{ inMailbox: sent.id }, { operator: "OR", conditions: [{ to: address }, { cc: address }, { bcc: address }] }] },
         sort: [{ property: "receivedAt", isAscending: false }],
-        limit: SENT_MATCH_LIMIT,
+        limit: CORRESPONDENCE_MATCH_LIMIT,
       }, "0"],
       ["Email/get", {
         accountId: session.accountId,
         "#ids": { resultOf: "0", name: "Email/query", path: "/ids" },
-        properties: ["id", "to", "cc", "bcc"],
+        properties: ["id", "from", "to", "cc", "bcc"],
       }, "1"],
     ]);
     const list = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
     const needle = extractAddress(address);
-    return list.some((e: any) => [...(e.to ?? []), ...(e.cc ?? []), ...(e.bcc ?? [])].some((a: any) => (a?.email ?? "").toLowerCase() === needle));
+    return list.some((e: any) => [...(e.from ?? []), ...(e.to ?? []), ...(e.cc ?? []), ...(e.bcc ?? [])].some((a: any) => (a?.email ?? "").toLowerCase() === needle));
   }
 
   async getDraftRecipients(draftId: string): Promise<string[]> {
@@ -733,6 +706,14 @@ export class JmapProvider implements MailProvider {
 
   async sendDraft(draftId: string): Promise<string> {
     const session = await this.ensureSession();
+    // Only a message still carrying $draft may be submitted; otherwise any
+    // received message could be relayed as if the account had written it.
+    const check = await this.apiCall([
+      ["Email/get", { accountId: session.accountId, ids: [draftId], properties: ["id", "keywords"] }, "0"],
+    ]);
+    const draft = check.find((r: any) => r[0] === "Email/get")?.[1]?.list?.[0];
+    if (!draft) throw new Error(`Draft ${draftId} not found`);
+    if (!draft.keywords?.["$draft"]) throw new Error(`${draftId} is not a draft; only drafts can be sent.`);
     // Submit the existing draft for delivery. JMAP EmailSubmission/set with
     // onSuccessUpdateEmail clears the $draft keyword and moves it to Sent.
     const responses = await this.apiCall([
@@ -813,10 +794,8 @@ export class JmapProvider implements MailProvider {
         "#ids": { resultOf: "0", name: "Email/query", path: "/ids" },
         properties: ["id", "threadId", "from", "to", "subject", "preview", "receivedAt", "mailboxIds", "hasAttachment", AUTH_HEADER_PROP],
       }, "1"],
-      this.sentMailboxQuery(session.accountId),
     ]);
     const emails = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
-    const sentId = sentMailboxId(responses);
     return emails.map((e: any) => ({
       id: e.id,
       threadId: e.threadId,
@@ -827,19 +806,15 @@ export class JmapProvider implements MailProvider {
       date: e.receivedAt ?? "",
       labels: Object.keys(e.mailboxIds ?? {}),
       hasAttachments: e.hasAttachment ?? false,
-      auth: jmapAuth(e, sentId),
+      auth: jmapAuth(e),
     }));
   }
 }
 
 const AUTH_HEADER_PROP = "header:Authentication-Results:all";
-const SENT_MATCH_LIMIT = 50;
+const CORRESPONDENCE_MATCH_LIMIT = 50;
 
-function sentMailboxId(responses: any[]): string | undefined {
-  return responses.find((r: any) => r[0] === "Mailbox/query" && r[2] === "sent")?.[1]?.ids?.[0];
-}
-
-function jmapAuth(e: any, sentId: string | undefined): SenderAuth {
+function jmapAuth(e: any): SenderAuth {
   const values = e[AUTH_HEADER_PROP];
-  return { authenticationResults: Array.isArray(values) ? values.map((v: unknown) => String(v).trim()) : [], sent: !!sentId && !!e.mailboxIds?.[sentId] };
+  return { authenticationResults: Array.isArray(values) ? values.map((v: unknown) => String(v).trim()) : [] };
 }

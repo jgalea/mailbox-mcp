@@ -59,23 +59,41 @@ describe("account tools", () => {
     }
   });
 
-  it("authenticate on an existing alias keeps its guards and only tightens them", async () => {
+  it("authenticate refuses an existing alias, guarded or not, without touching it", async () => {
     process.env.MAILBOX_MCP_PASSPHRASE = "test-passphrase";
     try {
-      const imap = { provider: "imap", host: "imap.example.com", smtpHost: "smtp.example.com", username: "u", password: "p", email: "u@example.com" };
-      ctx.accountManager.addAccount("gated", { provider: "imap", email: "u@example.com", host: "imap.example.com", port: 993, smtpHost: "smtp.example.com", smtpPort: 587, approval: "external", untrustedReadLock: "approval", allowedRecipients: ["@example.com"], dailySendLimit: 5 });
+      const imap = { provider: "imap", host: "imap.attacker.example", smtpHost: "smtp.attacker.example", username: "u", password: "p", email: "other@attacker.example" };
+      const original = { provider: "imap" as const, email: "u@example.com", host: "imap.example.com", port: 993, smtpHost: "smtp.example.com", smtpPort: 587, approval: "external" as const, untrustedReadLock: "approval" as const, allowedRecipients: ["@example.com"], dailySendLimit: 5 };
+      ctx.accountManager.addAccount("gated", original);
+      const guarded = await handleToolCall("authenticate", { ...imap, alias: "gated", daily_send_limit: 500 }, ctx);
+      expect(guarded.isError).toBe(true);
+      expect(guarded.content[0].text).toMatch(/already exists and has safety settings \(allowedRecipients, dailySendLimit, approval, untrustedReadLock\).*edit accounts.json/);
+      expect(ctx.accountManager.getAccount("gated")).toEqual(original);
 
-      const again = await handleToolCall("authenticate", { ...imap, alias: "gated", daily_send_limit: 500, allowed_recipients: ["leak@attacker.example"] }, ctx);
-      expect(again.isError).toBeUndefined();
-      expect(again.content[0].text).toMatch(/Existing safety settings were kept/);
-      expect(ctx.accountManager.getAccount("gated")).toMatchObject({ approval: "external", untrustedReadLock: "approval", allowedRecipients: ["@example.com"], dailySendLimit: 5 });
-
-      const tighter = await handleToolCall("authenticate", { ...imap, alias: "gated", untrusted_read_lock: "refuse", read_only: true }, ctx);
-      expect(tighter.isError).toBeUndefined();
-      expect(ctx.accountManager.getAccount("gated")).toMatchObject({ approval: "external", untrustedReadLock: "refuse", readOnly: true, dailySendLimit: 5 });
+      ctx.accountManager.addAccount("plain", { provider: "gmail", email: "p@example.com" });
+      const unguarded = await handleToolCall("authenticate", { ...imap, alias: "plain" }, ctx);
+      expect(unguarded.isError).toBe(true);
+      expect(unguarded.content[0].text).toMatch(/already exists\. Nothing about it can be changed/);
+      expect(ctx.accountManager.getAccount("plain")).toEqual({ provider: "gmail", email: "p@example.com" });
     } finally {
       delete process.env.MAILBOX_MCP_PASSPHRASE;
     }
+  });
+
+  it("authenticate never takes trusted_senders or authserv_id, and list_accounts shows them when set in the file", async () => {
+    process.env.MAILBOX_MCP_PASSPHRASE = "test-passphrase";
+    try {
+      const imap = { provider: "imap", host: "imap.example.com", smtpHost: "smtp.example.com", username: "u", password: "p" };
+      const result = await handleToolCall("authenticate", { ...imap, alias: "fresh", email: "f@example.com", trusted_senders: ["anyone@attacker.example"], trustedSenders: ["anyone@attacker.example"], authserv_id: "mx.attacker.example", authservId: "mx.attacker.example" }, ctx);
+      expect(result.isError).toBeUndefined();
+      expect(ctx.accountManager.getAccount("fresh")).toEqual({ provider: "imap", email: "f@example.com", host: "imap.example.com", port: 993, smtpHost: "smtp.example.com", smtpPort: 587 });
+    } finally {
+      delete process.env.MAILBOX_MCP_PASSPHRASE;
+    }
+    ctx.accountManager.addAccount("listed", { provider: "gmail", email: "l@example.com", untrustedReadLock: "approval", trustedSenders: ["boss@example.org", "@partner.example"], authservId: "mx.example.com" });
+    const listed = await handleToolCall("list_accounts", {}, ctx);
+    expect(listed.content[0].text).toContain("trusted senders: boss@example.org, @partner.example");
+    expect(listed.content[0].text).toContain("authserv-id: mx.example.com");
   });
 
   it("remove_account refuses for an account with any guard set", async () => {

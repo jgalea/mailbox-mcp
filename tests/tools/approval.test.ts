@@ -62,8 +62,17 @@ describe("approval: external", () => {
     rmSync(dir, { recursive: true, force: true });
   });
 
+  it("send_email refuses to attach anything from the config or log directory", async () => {
+    writeFileSync(join(dir, "accounts.json"), "{}");
+    const result = await handleToolCall("send_email", { account: "personal", to: ["a@example.net"], subject: "s", body: "b", attachments: [join(dir, "accounts.json")] }, ctx);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/inside the mailbox-mcp config or log directory/);
+    expect(listPending()).toEqual([]);
+  });
+
   it("send_email writes the resolved message to the queue and sends nothing", async () => {
-    const attachment = join(dir, "report.pdf");
+    const attDir = mkdtempSync(join(tmpdir(), "mbx-approval-att-"));
+    const attachment = join(attDir, "report.pdf");
     writeFileSync(attachment, "%PDF-1.4 hello");
     const result = await handleToolCall("send_email", {
       account: "personal", to: ["a@example.net"], cc: ["Cee <c@example.net>"], bcc: ["b@example.net"],

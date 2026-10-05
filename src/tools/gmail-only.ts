@@ -19,7 +19,7 @@ function senderFromMetadata(data: any): { from: string; auth: SenderAuth } {
   const named = (name: string) => headers.filter((h) => h.name?.toLowerCase() === name).map((h) => h.value ?? "");
   return {
     from: named("from")[0] ?? "",
-    auth: { authenticationResults: named("authentication-results"), sent: (data?.labelIds ?? []).includes("SENT") },
+    auth: { authenticationResults: named("authentication-results") },
   };
 }
 

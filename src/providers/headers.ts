@@ -1,3 +1,5 @@
+import { stripInvisibleChars } from "../security/sanitize.js";
+
 /**
  * Return `subject` with an `Re: ` prefix added unless one already exists.
  * Matches `Re:`, `RE:`, `re:`, `Re :` etc. — but not non-reply strings like
@@ -23,6 +25,32 @@ export function ensureForwardPrefix(subject: string): string {
 export function extractAddress(raw: string): string {
   const angled = raw.match(/<([^>]*)>/);
   return (angled ? angled[1] : raw).trim().toLowerCase();
+}
+
+const ADDR_SPEC = /^[^\s@<>"(),;:]+@[^\s@<>"(),;:]+\.[^\s@<>"(),;:.]+$/;
+
+// Reduces a header value to one bare lowercase address, or to null when a
+// parser could read it two ways: several addresses, a display name carrying
+// its own angle brackets or @, invisible or control characters, or no usable
+// address at all. Used wherever an address feeds a guard decision, so every
+// ambiguity lands on the safe side.
+export function strictAddress(raw: string): string | null {
+  const { text, removed } = stripInvisibleChars(raw);
+  if (removed > 0 || /[\u0000-\u001f\u007f]/.test(text)) return null;
+  const parts = splitAddressList(text);
+  if (parts.length !== 1) return null;
+  const part = parts[0];
+  const angled = [...part.matchAll(/<([^<>]*)>/g)];
+  if (angled.length > 1) return null;
+  let address = part.trim();
+  if (angled.length === 1) {
+    const match = angled[0];
+    address = match[1].trim();
+    const display = part.slice(0, match.index) + part.slice(match.index! + match[0].length);
+    if (/[<>@]/.test(display)) return null;
+  }
+  if (!ADDR_SPEC.test(address)) return null;
+  return address.toLowerCase();
 }
 
 /**
