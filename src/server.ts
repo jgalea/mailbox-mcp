@@ -244,10 +244,31 @@ process.on("uncaughtException", (err) => {
 for (const sig of ["SIGHUP", "SIGINT"] as const) {
   process.on(sig, () => { logEvent("signal-ignored", sig); });
 }
-// SIGTERM is the harness's explicit "stop now" -- honour it with a clean exit.
+// SIGTERM used to be treated as the harness's authoritative "stop now" and was
+// honoured with an immediate exit. The debug log says otherwise. Across 7-9 Sep
+// 2026 every one of 295 exits was preceded by SIGTERM, and 206 of 261 server
+// lifetimes ended within two minutes of starting, typically after 5 to 40
+// seconds of healthy serving. Over the same period a sibling stdio server in the
+// same session (pigeon) registered no signal handlers at all, would have died on
+// Node's default SIGTERM disposition had it received one, and stayed up for 38
+// hours. So this SIGTERM is collateral rather than a real stop request, and
+// honouring it is what made mailbox "keep disconnecting" while others survived.
+//
+// Treat it as a soft request. A genuine shutdown also closes the pipe, so give
+// the authoritative paths (stdin end/close, transport close, reparent watchdog)
+// a moment to fire. If none of them do, the pipe is healthy, nothing actually
+// wants us gone, and we keep serving.
+const SIGTERM_GRACE_MS = 2_000;
 process.on("SIGTERM", () => {
-  logEvent("signal", "SIGTERM");
-  process.exit(0);
+  logEvent("signal", "SIGTERM (soft, awaiting pipe close)");
+  setTimeout(() => {
+    if (shuttingDown) return;
+    if (!process.stdin.readable || process.stdin.destroyed) {
+      shutdownClean("sigterm-then-pipe-gone");
+      return;
+    }
+    logEvent("signal-ignored", "SIGTERM (pipe still open, kept alive)");
+  }, SIGTERM_GRACE_MS).unref();
 });
 process.on("exit", (code) => { logEvent("exit", `code=${code}`); });
 
