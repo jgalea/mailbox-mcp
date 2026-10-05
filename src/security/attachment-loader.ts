@@ -69,7 +69,7 @@ export function loadAttachmentFromPath(path: string): Attachment {
   if (!existsSync(path)) {
     throw new Error(`Attachment not found: ${path}`);
   }
-  const resolved = realpathSync(path);
+  const resolved = realpathSync.native(path);
   if (isInsideProtectedDir(resolved)) {
     throw new Error(`Attachment "${path}" is inside the mailbox-mcp config or log directory, which holds credentials and safety state. Refusing to attach it.`);
   }

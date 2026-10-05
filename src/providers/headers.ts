@@ -18,8 +18,8 @@ export function ensureForwardPrefix(subject: string): string {
 }
 
 /**
- * Pull the bare addr-spec out of a header value, so `Jean <a@b.com>` and
- * `a@b.com` both compare equal. Lowercased because mail domains are
+ * Pull the bare addr-spec out of a header value, so `Name <user@example.com>` and
+ * `user@example.com` both compare equal. Lowercased because mail domains are
  * case-insensitive and alias lists are matched by equality.
  */
 export function extractAddress(raw: string): string {

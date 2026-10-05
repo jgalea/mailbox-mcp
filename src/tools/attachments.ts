@@ -1,9 +1,7 @@
-import { join, basename } from "node:path";
-import { writeFileSync, mkdirSync, existsSync, chmodSync } from "node:fs";
 import { registerTool, lookupAccount } from "./registry.js";
 import { markTainted } from "../security/taint.js";
 import { validateAttachmentPath } from "../security/validation.js";
-import { DEFAULT_DOWNLOAD_DIR, validateSavePath } from "../security/save-path.js";
+import { DEFAULT_DOWNLOAD_DIR, saveFile } from "../security/save-path.js";
 
 registerTool(
   {
@@ -27,16 +25,7 @@ registerTool(
     markTainted(args.account as string, lookupAccount(ctx, args.account as string), "download_attachment", `attachment from message ${args.message_id}`);
 
     validateAttachmentPath(result.filename);
-    const safeName = basename(result.filename);
-
-    const dir = (args.save_to as string) ?? DEFAULT_DOWNLOAD_DIR;
-    validateSavePath(dir);
-
-    if (!existsSync(dir)) { mkdirSync(dir, { recursive: true }); }
-
-    const filePath = join(dir, safeName);
-    writeFileSync(filePath, result.data, { mode: 0o600 });
-    chmodSync(filePath, 0o600);
+    const filePath = saveFile((args.save_to as string) ?? DEFAULT_DOWNLOAD_DIR, result.filename, result.data);
 
     return { content: [{ type: "text", text: `Downloaded "${result.filename}" (${result.mimeType}, ${result.data.length} bytes) to ${filePath}` }] };
   }

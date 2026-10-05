@@ -1,9 +1,7 @@
-import { join, basename } from "node:path";
-import { writeFileSync, mkdirSync, existsSync, chmodSync } from "node:fs";
 import { registerTool, lookupAccount } from "./registry.js";
 import { markTainted } from "../security/taint.js";
 import { validateAttachmentPath } from "../security/validation.js";
-import { DEFAULT_DOWNLOAD_DIR, validateSavePath } from "../security/save-path.js";
+import { DEFAULT_DOWNLOAD_DIR, saveFile } from "../security/save-path.js";
 
 registerTool(
   {
@@ -26,16 +24,7 @@ registerTool(
     markTainted(args.account as string, lookupAccount(ctx, args.account as string), "export_email", `exported message ${args.message_id}`);
 
     validateAttachmentPath(result.filename);
-    const safeName = basename(result.filename);
-
-    const dir = (args.save_to as string) ?? DEFAULT_DOWNLOAD_DIR;
-    validateSavePath(dir);
-
-    if (!existsSync(dir)) { mkdirSync(dir, { recursive: true }); }
-
-    const filePath = join(dir, safeName);
-    writeFileSync(filePath, result.data, { mode: 0o600 });
-    chmodSync(filePath, 0o600);
+    const filePath = saveFile((args.save_to as string) ?? DEFAULT_DOWNLOAD_DIR, result.filename, result.data);
 
     return { content: [{ type: "text", text: `Exported "${result.filename}" (${result.data.length} bytes) to ${filePath}` }] };
   }
@@ -61,17 +50,11 @@ registerTool(
     markTainted(args.account as string, lookupAccount(ctx, args.account as string), "export_thread", `exported thread ${args.thread_id}`);
 
     const dir = (args.save_to as string) ?? DEFAULT_DOWNLOAD_DIR;
-    validateSavePath(dir);
-    if (!existsSync(dir)) { mkdirSync(dir, { recursive: true }); }
-
     const written: string[] = [];
     for (const msg of thread.messages) {
       const exported = await provider.exportMessage(msg.id);
       validateAttachmentPath(exported.filename);
-      const filePath = join(dir, basename(exported.filename));
-      writeFileSync(filePath, exported.data, { mode: 0o600 });
-      chmodSync(filePath, 0o600);
-      written.push(filePath);
+      written.push(saveFile(dir, exported.filename, exported.data));
     }
     return { content: [{ type: "text", text: `Exported ${written.length} messages from thread ${args.thread_id}:\n${written.join("\n")}` }] };
   },
