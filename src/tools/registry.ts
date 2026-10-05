@@ -1,18 +1,25 @@
-import type { Tool } from "@modelcontextprotocol/sdk/types.js";
+import type { Tool, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { MailProvider, ProviderCapabilities } from "../providers/interface.js";
-import type { AccountManager } from "../accounts.js";
+import type { AccountConfig, AccountManager } from "../accounts.js";
+import { ResponseFence } from "../security/sanitize.js";
 
 export interface ToolContext {
   accountManager: AccountManager;
   getProvider: (alias: string) => MailProvider | Promise<MailProvider>;
   clearProviderCache?: (alias: string) => void;
+  /** Per-response fence; the registry creates one for every call. */
+  fence: ResponseFence;
 }
 
+export type ToolContextInput = Omit<ToolContext, "fence"> & { fence?: ResponseFence };
+
+export type ToolResult = {
+  content: Array<{ type: "text"; text: string }>;
+  isError?: boolean;
+};
+
 export interface ToolHandler {
-  (args: Record<string, unknown>, ctx: ToolContext): Promise<{
-    content: Array<{ type: "text"; text: string }>;
-    isError?: boolean;
-  }>;
+  (args: Record<string, unknown>, ctx: ToolContext): Promise<ToolResult>;
 }
 
 interface RegisteredTool {
@@ -23,6 +30,40 @@ interface RegisteredTool {
 
 const tools: RegisteredTool[] = [];
 
+const READ: ToolAnnotations = { readOnlyHint: true, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const SEND: ToolAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: false, openWorldHint: true };
+const CREATE: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: false };
+const UPDATE: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+const DELETE: ToolAnnotations = { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false };
+const LOCAL_WRITE: ToolAnnotations = { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: false };
+
+// Every tool must appear here; registerTool refuses one that does not, so a
+// new tool cannot ship without saying whether it writes. readOnlyHint also
+// drives the per-account read-only mode.
+export const TOOL_ANNOTATIONS: Record<string, ToolAnnotations> = {
+  list_accounts: READ,
+  authenticate: { readOnlyHint: false, destructiveHint: false, idempotentHint: false, openWorldHint: true },
+  reauth: { readOnlyHint: false, destructiveHint: false, idempotentHint: true, openWorldHint: true },
+  remove_account: DELETE,
+  search_emails: READ, multi_account_search: READ, read_email: READ, read_thread: READ,
+  inbox_summary: READ, emails_since: READ, count_unread_by_label: READ,
+  send_email: SEND, reply_email: SEND, forward_email: SEND, send_draft: SEND, send_template: SEND,
+  create_draft: CREATE, update_draft: UPDATE, delete_draft: DELETE, list_drafts: READ,
+  mark_read: UPDATE, star_email: UPDATE, archive_email: UPDATE,
+  modify_email: UPDATE, batch_modify_emails: UPDATE,
+  trash_emails: DELETE,
+  list_labels: READ, create_label: CREATE, delete_label: DELETE,
+  bulk_modify: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  bulk_trash: DELETE, list_recent_bulk_ops: READ, undo_bulk_op: UPDATE,
+  download_attachment: LOCAL_WRITE, export_email: LOCAL_WRITE, export_thread: LOCAL_WRITE,
+  list_filters: READ, create_filter: CREATE, delete_filter: DELETE,
+  save_template: CREATE, list_templates: READ, delete_template: DELETE,
+  get_signature: READ, set_signature: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  get_vacation: READ, set_vacation: { readOnlyHint: false, destructiveHint: true, idempotentHint: true, openWorldHint: false },
+  unsubscribe: READ, bulk_unsubscribe: READ,
+  list_send_as: READ,
+};
+
 export function registerTool(
   definition: Tool,
   handler: ToolHandler,
@@ -31,7 +72,11 @@ export function registerTool(
   if (tools.some(t => t.definition.name === definition.name)) {
     throw new Error(`Tool "${definition.name}" is already registered`);
   }
-  tools.push({ definition, handler, requiredCapability });
+  const annotations = TOOL_ANNOTATIONS[definition.name];
+  if (!annotations) {
+    throw new Error(`Tool "${definition.name}" has no entry in TOOL_ANNOTATIONS`);
+  }
+  tools.push({ definition: { ...definition, annotations }, handler, requiredCapability });
 }
 
 // Tool groups selectable via MAILBOX_MCP_TOOLS (comma-separated group names).
@@ -76,11 +121,27 @@ export function sanitizeErrorMessage(message: string, redactTokens: (s: string) 
   return redactTokens(message).replace(/\/[^\s:,'"]+\//g, "[path]/");
 }
 
+export function lookupAccount(ctx: ToolContext, alias: string): AccountConfig | undefined {
+  try {
+    return ctx.accountManager.getAccount(alias) ?? undefined;
+  } catch {
+    return undefined;
+  }
+}
+
+export function readOnlyRefusal(alias: string): ToolResult {
+  return {
+    content: [{ type: "text", text: `Refused: account "${alias}" is configured read-only (readOnly: true in accounts.json). Reads work; nothing can be sent, changed, or deleted from here.` }],
+    isError: true,
+  };
+}
+
 export async function handleToolCall(
   name: string,
   args: Record<string, unknown>,
-  ctx: ToolContext
-): Promise<{ content: Array<{ type: "text"; text: string }>; isError?: boolean }> {
+  input: ToolContextInput
+): Promise<ToolResult> {
+  const ctx: ToolContext = { ...input, fence: input.fence ?? new ResponseFence() };
   const tool = tools.find((t) => t.definition.name === name);
   if (!tool) {
     return { content: [{ type: "text", text: `Unknown tool: ${name}` }], isError: true };
@@ -93,6 +154,11 @@ export async function handleToolCall(
       }],
       isError: true,
     };
+  }
+
+  const alias = typeof args.account === "string" ? args.account : undefined;
+  if (alias && tool.definition.annotations?.readOnlyHint !== true && lookupAccount(ctx, alias)?.readOnly) {
+    return readOnlyRefusal(alias);
   }
 
   if (tool.requiredCapability && args.account) {
@@ -108,11 +174,19 @@ export async function handleToolCall(
     }
   }
 
+  let result: ToolResult;
   try {
-    return await tool.handler(args, ctx);
+    result = await tool.handler(args, ctx);
   } catch (error) {
     const { redactTokens } = await import("../security/sanitize.js");
     const message = error instanceof Error ? error.message : String(error);
     return { content: [{ type: "text", text: sanitizeErrorMessage(message, redactTokens) }], isError: true };
   }
+
+  const warnings = ctx.fence.warnings();
+  if (warnings.length > 0 && result.content.length > 0) {
+    const last = result.content[result.content.length - 1];
+    result.content[result.content.length - 1] = { ...last, text: `${last.text}\n\n${warnings.join("\n")}` };
+  }
+  return result;
 }

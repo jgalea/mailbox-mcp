@@ -16,9 +16,27 @@ mailbox-mcp is an [MCP server](https://modelcontextprotocol.io) that connects yo
 
 - **Multiple accounts, one server.** Work email, personal email, client accounts — all accessible through a single server. No need to run separate instances.
 - **Not just Gmail.** Supports Gmail (full API), any IMAP/SMTP provider (ProtonMail, corporate mail, self-hosted), and JMAP (Fastmail, Stalwart, Topicbox). Add providers without changing a line of tool code.
-- **Security-conscious.** Encrypted credentials (AES-256-GCM), prompt injection fencing on email content, rate limiting, TLS enforcement, SSRF protection with IP encoding evasion detection, input validation.
+- **Built for untrusted input.** Hidden-text stripping, random-nonce fences, confirmations before mail leaves the account, per-account read-only and drafts-only modes, encrypted credentials (AES-256-GCM), TLS enforcement, SSRF protection. Details in [Security](#security).
 - **Tools for the workflows that matter.** Search, read, send, reply, forward, drafts, labels, filters, templates, signatures, vacation replies, attachments, unsubscribe, and more.
 - **Zero native dependencies.** Pure Node.js. Install and run anywhere.
+
+## Security
+
+Giving a model access to a mailbox means giving it access to text written by strangers. Any sender controls the subject, body, headers and attachment filenames of what the model reads, so the two risks are the model following instructions planted in an email, and the model sending mail somewhere it shouldn't (the usual goal of such instructions: forward the thread, reply with the contents of another message, mail a secret to an outside address). mailbox-mcp puts several layers between those two things.
+
+**Fenced untrusted content.** Everything that came from an email is wrapped in `[UNTRUSTED_<KIND>_<nonce>] ... [/UNTRUSTED_<KIND>_<nonce>]` markers, and the server's MCP instructions tell the client that text inside them is data to report, never instructions to follow. The nonce is a random hex string chosen fresh for every tool response, so an email cannot close a fence early or open a fake one; anything in the content that even looks like a marker, in any case or with Unicode lookalike characters, has its bracket replaced before it reaches the model.
+
+**Hidden text is removed, and you're told.** HTML-only messages are reduced to what a mail client would actually show. Elements hidden with `display:none`, `visibility:hidden`, `opacity:0`, zero or near-zero font sizes, text the same colour as its background (white on white), the `hidden` attribute, `aria-hidden`, off-screen positioning and the preheader `max-height:0; overflow:hidden` trick are dropped, along with comments, scripts, styles and templates. Zero-width and bidirectional control characters are stripped from every body, subject, header and filename. When anything was removed, the response ends with a visible warning saying how many characters went, so a message that says one thing to you and another to the model is flagged rather than silently cleaned.
+
+**Confirmations before mail leaves.** Sending to an address the account has never sent to or received from needs `confirm_new_recipient: true`; the error lists the new addresses. Forwarding to a domain other than the account's own needs `confirm_external_forward: true`. The client is told to pass those flags only when you asked for that recipient yourself, never because an email did. Both checks are on by default.
+
+**Per-account modes.** An account can carry a recipient allowlist (exact addresses and `@domain` patterns; everyone else is refused), a `draftsOnly` flag (send tools create a draft for you to review instead), and a `readOnly` flag (every write tool refuses; search and read keep working). These are set in `accounts.json` or when the account is created, and no tool can loosen them, so a hijacked session cannot switch them off. See [Account safety settings](#account-safety-settings).
+
+**Tool annotations.** All 49 tools carry MCP `readOnlyHint`, `destructiveHint`, `idempotentHint` and `openWorldHint` annotations, so a client can auto-approve reads and always ask before anything that sends, deletes or changes settings.
+
+**Caps and a log.** At most 10 sends per minute and, by default, 100 per rolling 24 hours per account; the daily count is kept on disk and survives restarts. Every send through the server is recorded in `~/.mailbox-mcp/sends.jsonl` with its recipients, and every bulk label or trash operation in `transactions.jsonl` with an undo id.
+
+None of this makes prompt injection impossible. A model can still be talked into a reply you didn't want, and a text/plain part can say something different from the HTML part a human sees. Keep a human approving sends. A reasonable setup: `readOnly: true` on accounts you only need to search, an allowlist (or `draftsOnly`) on any account an agent sends from unattended, and the default confirmations everywhere else.
 
 ## Quick Start
 
@@ -40,7 +58,7 @@ Add to your Claude Code MCP config (`~/.claude.json`). The package runs straight
 }
 ```
 
-`MAILBOX_MCP_PASSPHRASE` is the passphrase used to encrypt IMAP/JMAP credentials at rest; it's required before adding an IMAP or JMAP account, and unused for Gmail-only setups.
+`MAILBOX_MCP_PASSPHRASE` is the passphrase used to encrypt IMAP/JMAP credentials at rest; it's required before adding an IMAP or JMAP account, and unused for Gmail-only setups. `MAILBOX_MCP_CONFIG_DIR` moves the config directory somewhere other than `~/.mailbox-mcp`.
 
 <details>
 <summary>From source instead</summary>
@@ -124,12 +142,12 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 | `multi_account_search` | Run the same query across every configured account in parallel |
 | `read_email` | Read a message |
 | `read_thread` | Read a conversation thread (Gmail + JMAP) |
-| `send_email` | Send a new email (supports `from`, `attachments`) |
-| `reply_email` | Reply to a message (supports `from`, `attachments`) |
-| `forward_email` | Forward a message (supports `from`, `attachments`) |
+| `send_email` | Send a new email (supports `from`, `attachments`; new recipients need `confirm_new_recipient`) |
+| `reply_email` | Reply to a message (supports `from`, `attachments`; extra cc/bcc to new addresses need `confirm_new_recipient`) |
+| `forward_email` | Forward a message (supports `from`, `attachments`; other domains need `confirm_external_forward`) |
 | `create_draft` | Create a draft (supports reply drafts via `in_reply_to`, plus `from`, `attachments`) |
 | `list_drafts` | List drafts for an account |
-| `send_draft` | Send an existing draft |
+| `send_draft` | Send an existing draft (same recipient guards as `send_email`) |
 | `trash_emails` | Trash messages |
 | `mark_read` | Mark a message as read or unread |
 | `star_email` | Star or unstar a message |
@@ -170,6 +188,36 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 | `unsubscribe` | Find unsubscribe link |
 | `bulk_unsubscribe` | Bulk unsubscribe |
 | `list_send_as` | List send-as aliases |
+
+## Account safety settings
+
+Each entry in `~/.mailbox-mcp/accounts.json` can carry four optional fields:
+
+```json
+{
+  "accounts": {
+    "archive": { "provider": "gmail", "email": "old@example.com", "readOnly": true },
+    "agent": {
+      "provider": "imap", "email": "bot@example.com",
+      "host": "imap.example.com", "port": 993, "smtpHost": "smtp.example.com", "smtpPort": 587,
+      "allowedRecipients": ["ops@example.com", "@example.com"],
+      "dailySendLimit": 20
+    },
+    "personal": { "provider": "gmail", "email": "me@example.com", "draftsOnly": true }
+  }
+}
+```
+
+| Field | Effect |
+|-------|--------|
+| `readOnly` | Every tool that isn't read-only refuses for this account with a clear error. Search, read, list and export still work. |
+| `draftsOnly` | `send_email`, `reply_email`, `forward_email` and `send_template` create a draft instead and say so; `send_draft` refuses. The allowlist still applies; the confirmations and daily cap don't, since nothing leaves. |
+| `allowedRecipients` | Exact addresses and `@domain` patterns (a domain pattern matches that domain only, not subdomains). Sends, replies, forwards and drafts to any other address are refused. |
+| `dailySendLimit` | Sends allowed per rolling 24 hours (default 100; `0` blocks all sending). Counted from `sends.jsonl`, so restarts don't reset it. |
+
+The same settings can be passed to `authenticate` as `read_only`, `drafts_only`, `allowed_recipients` and `daily_send_limit` when the account is created, and `list_accounts` shows them. There is deliberately no tool to change them afterwards: edit the file and restart the server. Malformed entries make the server refuse to start rather than run unguarded.
+
+How "new recipient" is decided: an address is known if this server has sent to it before from that account (the `sends.jsonl` log), if it is the account's own address, or if one provider search (`from:addr OR to:addr`, limited to one result; INBOX only on IMAP) finds a message. Anything else needs `confirm_new_recipient: true`. Reply targets taken from the message being replied to are trusted, since you already received mail from them.
 
 ## Choosing which tools load
 

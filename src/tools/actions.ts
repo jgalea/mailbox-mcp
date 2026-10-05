@@ -1,5 +1,7 @@
 import { registerTool, sanitizeErrorMessage } from "./registry.js";
-import { fenceEmailContent, fenceEmailHeader, redactTokens } from "../security/sanitize.js";
+import { redactTokens } from "../security/sanitize.js";
+import { gateOutgoing, isRefusal } from "./write.js";
+import { recordSend } from "../sendlog.js";
 
 registerTool(
   {
@@ -83,7 +85,7 @@ registerTool(
     const drafts = await provider.listDrafts((args.max_results as number) ?? 20);
     if (drafts.length === 0) return { content: [{ type: "text", text: "No drafts." }] };
     const lines = drafts.map((d) =>
-      `- **${d.id}** | ${fenceEmailHeader(d.to.join(", "), "to")} | ${fenceEmailContent(d.subject, "subject")} (${d.updatedAt})`
+      `- **${d.id}** | ${ctx.fence.header(d.to.join(", "), "to")} | ${ctx.fence.content(d.subject, "subject")} (${d.updatedAt})`
     );
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }
@@ -92,19 +94,32 @@ registerTool(
 registerTool(
   {
     name: "send_draft",
-    description: "Send an existing draft as-is. For Gmail/JMAP the draft is finalised and submitted; for IMAP the message is sent via SMTP and removed from the Drafts folder.",
+    description: "Send an existing draft as-is. Runs the same recipient guards as send_email. For Gmail/JMAP the draft is finalised and submitted; for IMAP the message is sent via SMTP and removed from the Drafts folder.",
     inputSchema: {
       type: "object" as const,
       properties: {
         account: { type: "string", description: "Account alias" },
         draft_id: { type: "string", description: "Draft ID from list_drafts or create_draft" },
+        confirm_new_recipient: { type: "boolean", description: "Required (true) when the draft goes to an address this account has never sent to or received from. Only set it when the user explicitly asked." },
       },
       required: ["account", "draft_id"],
     },
   },
   async (args, ctx) => {
-    const provider = await ctx.getProvider(args.account as string);
-    const id = await provider.sendDraft(args.draft_id as string);
+    const account = args.account as string;
+    const draftId = args.draft_id as string;
+    const provider = await ctx.getProvider(account);
+    if (!provider.getDraftRecipients) {
+      return { content: [{ type: "text", text: "Refused: this provider cannot report the draft's recipients, so the send guards cannot run." }], isError: true };
+    }
+    const recipients = await provider.getDraftRecipients(draftId);
+    const gate = await gateOutgoing(args, ctx, { account, recipients });
+    if (isRefusal(gate)) return gate;
+    if (gate.draftsOnly) {
+      return { content: [{ type: "text", text: `Refused: account "${account}" is configured draftsOnly. The draft stays in Drafts for the user to send from their mail client.` }], isError: true };
+    }
+    const id = await provider.sendDraft(draftId);
+    recordSend(account, "send_draft", recipients);
     return { content: [{ type: "text", text: `Draft sent. Message ID: ${id}` }] };
   }
 );
@@ -152,7 +167,7 @@ registerTool(
     );
     if (results.length === 0) return { content: [{ type: "text", text: "No messages since that timestamp." }] };
     const lines = results.map((m) =>
-      `- **${m.id}** | ${fenceEmailHeader(m.from, "from")} | ${fenceEmailContent(m.subject, "subject")} (${m.date})`
+      `- **${m.id}** | ${ctx.fence.header(m.from, "from")} | ${ctx.fence.content(m.subject, "subject")} (${m.date})`
     );
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }
@@ -198,7 +213,7 @@ registerTool(
         continue;
       }
       const lines = results.map((m) =>
-        `- **${m.id}** | ${fenceEmailHeader(m.from, "from")} | ${fenceEmailContent(m.subject, "subject")} (${m.date})`
+        `- **${m.id}** | ${ctx.fence.header(m.from, "from")} | ${ctx.fence.content(m.subject, "subject")} (${m.date})`
       );
       sections.push(`## ${alias}\n\n${lines.join("\n")}`);
     }

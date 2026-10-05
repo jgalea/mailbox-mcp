@@ -37,17 +37,17 @@ function requireSecureUrl(url: string, context: string): void {
  * Extract a readable body from a JMAP Email/get response, preferring plain
  * text when present and falling back to HTML for HTML-only messages.
  */
-function extractJmapBody(e: any): string {
+function extractJmapBody(e: any): { text: string; html: boolean } {
   const values = e.bodyValues ?? {};
   const textPartId = e.textBody?.[0]?.partId;
   if (textPartId && values[textPartId]?.value) {
-    return values[textPartId].value;
+    return { text: values[textPartId].value, html: false };
   }
   const htmlPartId = e.htmlBody?.[0]?.partId;
   if (htmlPartId && values[htmlPartId]?.value) {
-    return values[htmlPartId].value;
+    return { text: values[htmlPartId].value, html: true };
   }
-  return "";
+  return { text: "", html: false };
 }
 
 function formatJmapAddress(addr: JmapAddress | undefined): string {
@@ -209,7 +209,7 @@ export class JmapProvider implements MailProvider {
     if (list.length === 0) throw new Error(`Message ${messageId} not found`);
     const e = list[0];
 
-    const bodyText = extractJmapBody(e);
+    const decoded = extractJmapBody(e);
     const subject = e.subject ?? "";
 
     return {
@@ -225,7 +225,8 @@ export class JmapProvider implements MailProvider {
       date: e.receivedAt ?? "",
       labels: Object.keys(e.mailboxIds ?? {}),
       hasAttachments: e.hasAttachment ?? false,
-      body: bodyText,
+      body: decoded.text,
+      bodyIsHtml: decoded.html || undefined,
       attachments: (e.attachments ?? []).map((a: any) => ({
         id: a.blobId,
         filename: a.name ?? "attachment",
@@ -260,7 +261,7 @@ export class JmapProvider implements MailProvider {
 
     const emails = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
     const messages: EmailMessage[] = emails.map((e: any) => {
-      const bodyText = extractJmapBody(e);
+      const decoded = extractJmapBody(e);
       return {
         id: e.id,
         threadId: e.threadId,
@@ -274,7 +275,8 @@ export class JmapProvider implements MailProvider {
         date: e.receivedAt ?? "",
         labels: Object.keys(e.mailboxIds ?? {}),
         hasAttachments: e.hasAttachment ?? false,
-        body: bodyText,
+        body: decoded.text,
+        bodyIsHtml: decoded.html || undefined,
         attachments: (e.attachments ?? []).map((a: any) => ({
           id: a.blobId,
           filename: a.name ?? "attachment",
@@ -650,6 +652,30 @@ export class JmapProvider implements MailProvider {
       snippet: e.preview ?? "",
       updatedAt: e.receivedAt ?? "",
     }));
+  }
+
+  async hasCorrespondedWith(address: string): Promise<boolean> {
+    const session = await this.ensureSession();
+    const responses = await this.apiCall([
+      ["Email/query", {
+        accountId: session.accountId,
+        filter: { operator: "OR", conditions: [{ from: address }, { to: address }] },
+        limit: 1,
+      }, "0"],
+    ]);
+    const ids = responses.find((r: any) => r[0] === "Email/query")?.[1]?.ids ?? [];
+    return ids.length > 0;
+  }
+
+  async getDraftRecipients(draftId: string): Promise<string[]> {
+    const session = await this.ensureSession();
+    const responses = await this.apiCall([
+      ["Email/get", { accountId: session.accountId, ids: [draftId], properties: ["id", "to", "cc", "bcc"] }, "0"],
+    ]);
+    const list = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
+    if (list.length === 0) throw new Error(`Draft ${draftId} not found`);
+    const e = list[0];
+    return [...formatJmapAddresses(e.to), ...formatJmapAddresses(e.cc), ...formatJmapAddresses(e.bcc)];
   }
 
   async sendDraft(draftId: string): Promise<string> {

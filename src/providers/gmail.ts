@@ -38,9 +38,17 @@ function* chunkIds(ids: string[], size: number): Generator<string[]> {
   for (let i = 0; i < ids.length; i += size) yield ids.slice(i, i + size);
 }
 
-function decodeBody(payload: GmailMessagePart): string {
+interface DecodedBody {
+  text: string;
+  html: boolean;
+}
+
+function decodeBody(payload: GmailMessagePart): DecodedBody {
   if (payload.body?.data) {
-    return Buffer.from(payload.body.data, "base64url").toString("utf-8");
+    return {
+      text: Buffer.from(payload.body.data, "base64url").toString("utf-8"),
+      html: (payload.mimeType ?? "").toLowerCase().startsWith("text/html"),
+    };
   }
   if (payload.parts) {
     const textPart = payload.parts.find((p) => p.mimeType === "text/plain");
@@ -49,10 +57,10 @@ function decodeBody(payload: GmailMessagePart): string {
     if (htmlPart) return decodeBody(htmlPart);
     for (const part of payload.parts) {
       const nested = decodeBody(part);
-      if (nested) return nested;
+      if (nested.text) return nested;
     }
   }
-  return "";
+  return { text: "", html: false };
 }
 
 function extractAttachments(payload: GmailMessagePart): AttachmentInfo[] {
@@ -75,7 +83,7 @@ function extractAttachments(payload: GmailMessagePart): AttachmentInfo[] {
 
 function parseMessage(data: GmailMessage): EmailMessage {
   const headers = data.payload?.headers ?? [];
-  const body = decodeBody(data.payload!);
+  const decoded = decodeBody(data.payload!);
   const attachments = extractAttachments(data.payload!);
 
   return {
@@ -91,7 +99,8 @@ function parseMessage(data: GmailMessage): EmailMessage {
     date: getHeader(headers, "Date"),
     labels: data.labelIds ?? [],
     hasAttachments: attachments.length > 0,
-    body,
+    body: decoded.text,
+    bodyIsHtml: decoded.html || undefined,
     attachments,
   };
 }
@@ -485,6 +494,17 @@ export class GmailProvider implements MailProvider {
       });
     }
     return results;
+  }
+
+  async hasCorrespondedWith(address: string): Promise<boolean> {
+    const res = await this.gmail.users.messages.list({ userId: "me", q: `from:${address} OR to:${address}`, maxResults: 1 });
+    return (res.data.messages ?? []).length > 0;
+  }
+
+  async getDraftRecipients(draftId: string): Promise<string[]> {
+    const full = await this.gmail.users.drafts.get({ userId: "me", id: draftId, format: "metadata" });
+    const headers = full.data.message?.payload?.headers ?? [];
+    return ["To", "Cc", "Bcc"].flatMap((h) => splitAddressList(getHeader(headers, h)));
   }
 
   async sendDraft(draftId: string): Promise<string> {

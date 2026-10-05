@@ -1,7 +1,20 @@
-import { describe, it, expect, vi, beforeEach } from "vitest";
-import { handleToolCall, type ToolContext } from "../../src/tools/registry.js";
+import { describe, it, expect, vi, beforeEach, afterEach } from "vitest";
+import { mkdtempSync, rmSync } from "node:fs";
+import { join } from "node:path";
+import { tmpdir } from "node:os";
+import { handleToolCall, type ToolContextInput } from "../../src/tools/registry.js";
 import type { MailProvider } from "../../src/providers/interface.js";
 import "../../src/tools/actions.js";
+
+let logDir: string;
+beforeEach(() => {
+  logDir = mkdtempSync(join(tmpdir(), "mbx-actions-"));
+  process.env.MAILBOX_MCP_LOG_DIR = logDir;
+});
+afterEach(() => {
+  delete process.env.MAILBOX_MCP_LOG_DIR;
+  rmSync(logDir, { recursive: true, force: true });
+});
 
 function createMockProvider(overrides: Partial<MailProvider> = {}): MailProvider {
   return {
@@ -15,6 +28,8 @@ function createMockProvider(overrides: Partial<MailProvider> = {}): MailProvider
     archiveMessage: vi.fn().mockResolvedValue(undefined),
     listDrafts: vi.fn().mockResolvedValue([]),
     sendDraft: vi.fn().mockResolvedValue("sent-id-1"),
+    getDraftRecipients: vi.fn().mockResolvedValue(["known@example.com"]),
+    hasCorrespondedWith: vi.fn().mockResolvedValue(true),
     countUnreadByLabel: vi.fn().mockResolvedValue([]),
     messagesSince: vi.fn().mockResolvedValue([]),
     searchMessages: vi.fn().mockResolvedValue([]),
@@ -24,12 +39,12 @@ function createMockProvider(overrides: Partial<MailProvider> = {}): MailProvider
 
 describe("action tools", () => {
   let provider: MailProvider;
-  let ctx: ToolContext;
+  let ctx: ToolContextInput;
 
   beforeEach(() => {
     provider = createMockProvider();
     ctx = {
-      accountManager: { listAccounts: vi.fn().mockReturnValue({ personal: {}, work: {} }) } as any,
+      accountManager: { listAccounts: vi.fn().mockReturnValue({ personal: {}, work: {} }), getAccount: vi.fn() } as any,
       getProvider: vi.fn().mockResolvedValue(provider),
     };
   });
@@ -73,6 +88,32 @@ describe("action tools", () => {
     const r = await handleToolCall("send_draft", { account: "personal", draft_id: "d1" }, ctx);
     expect(provider.sendDraft).toHaveBeenCalledWith("d1");
     expect(r.content[0].text).toContain("sent-id-1");
+  });
+
+  it("send_draft refuses a draft addressed to a never-seen recipient without confirmation", async () => {
+    (provider.hasCorrespondedWith as any).mockResolvedValue(false);
+    const r = await handleToolCall("send_draft", { account: "personal", draft_id: "d1" }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toContain("known@example.com");
+    expect(provider.sendDraft).not.toHaveBeenCalled();
+    const ok = await handleToolCall("send_draft", { account: "personal", draft_id: "d1", confirm_new_recipient: true }, ctx);
+    expect(ok.isError).toBeUndefined();
+    expect(provider.sendDraft).toHaveBeenCalledWith("d1");
+  });
+
+  it("send_draft refuses on a draftsOnly account", async () => {
+    ctx.accountManager.getAccount = vi.fn().mockReturnValue({ provider: "gmail", email: "me@example.com", draftsOnly: true });
+    const r = await handleToolCall("send_draft", { account: "personal", draft_id: "d1" }, ctx);
+    expect(r.isError).toBe(true);
+    expect(r.content[0].text).toMatch(/draftsOnly/);
+    expect(provider.sendDraft).not.toHaveBeenCalled();
+  });
+
+  it("send_draft refuses when the provider cannot report recipients", async () => {
+    delete (provider as any).getDraftRecipients;
+    const r = await handleToolCall("send_draft", { account: "personal", draft_id: "d1" }, ctx);
+    expect(r.isError).toBe(true);
+    expect(provider.sendDraft).not.toHaveBeenCalled();
   });
 
   it("count_unread_by_label shows non-zero counts only via provider output", async () => {

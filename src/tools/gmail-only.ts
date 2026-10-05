@@ -1,7 +1,8 @@
 import { Readable } from "node:stream";
 import { registerTool } from "./registry.js";
-import { fenceEmailHeader, fenceEmailContent, stripFencing } from "../security/sanitize.js";
-import { checkSendLimit } from "./write.js";
+import { stripFencing } from "../security/sanitize.js";
+import { gateOutgoing, isRefusal } from "./write.js";
+import { recordSend } from "../sendlog.js";
 import { buildEmailBuffer, shouldUseMediaUpload, type GmailEncodeOptions, type GmailProvider } from "../providers/gmail.js";
 import { loadAttachments } from "../security/attachment-loader.js";
 
@@ -26,7 +27,7 @@ registerTool(
     const describe = (part: unknown, withNames = false) => {
       if (!part) return "{}";
       const value = withNames ? mapLabelIdsToNames(part as Record<string, unknown>, names) : part;
-      return fenceEmailContent(JSON.stringify(value));
+      return ctx.fence.content(JSON.stringify(value));
     };
     const lines = filters.map((f: any) => `- **${f.id}**: ${describe(f.criteria)} → ${describe(f.action, true)}`);
     return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -121,7 +122,7 @@ registerTool(
     const provider = await ctx.getProvider(args.account as string);
     const results = await provider.searchMessages("subject:[TEMPLATE:", 50);
     if (results.length === 0) return { content: [{ type: "text", text: "No templates saved." }] };
-    const lines = results.map((m) => `- **${m.id}**: ${fenceEmailContent(m.subject, "subject")}`);
+    const lines = results.map((m) => `- **${m.id}**: ${ctx.fence.content(m.subject, "subject")}`);
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }, "templates"
 );
@@ -141,14 +142,22 @@ registerTool(
     inputSchema: { type: "object" as const, properties: {
       account: { type: "string", description: "Account alias" }, message_id: { type: "string", description: "Template message ID" },
       to: { type: "array", items: { type: "string" }, description: "Recipients" },
+      confirm_new_recipient: { type: "boolean", description: "Required (true) for recipients this account has never sent to or received from. Only set it when the user explicitly asked." },
     }, required: ["account", "message_id", "to"] } },
   async (args, ctx) => {
-    const limitError = checkSendLimit(args.account as string);
-    if (limitError) return { content: [{ type: "text", text: limitError }], isError: true };
-    const provider = await ctx.getProvider(args.account as string);
-    const template = await provider.readMessage(args.message_id as string);
+    const account = args.account as string;
+    const to = (args.to as string[]) ?? [];
+    const gate = await gateOutgoing(args, ctx, { account, recipients: to });
+    if (isRefusal(gate)) return gate;
+    const template = await gate.provider.readMessage(args.message_id as string);
     const subject = stripFencing(template.subject).replace(/\[TEMPLATE:[^\]]+\]\s*/, "");
-    const id = await provider.sendMessage(args.to as string[], subject, stripFencing(template.body));
+    const body = stripFencing(template.body);
+    if (gate.draftsOnly) {
+      const id = await gate.provider.createDraft(to, subject, body);
+      return { content: [{ type: "text", text: `Account "${account}" is configured draftsOnly, so nothing was sent. Draft created from the template. Draft ID: ${id}` }] };
+    }
+    const id = await gate.provider.sendMessage(to, subject, body);
+    recordSend(account, "send_template", to);
     return { content: [{ type: "text", text: `Sent from template. Message ID: ${id}` }] };
   }, "templates"
 );
@@ -161,7 +170,7 @@ registerTool(
     const gmail = getGmailApi(await ctx.getProvider(args.account as string));
     const res = await gmail.users.settings.sendAs.list({ userId: "me" });
     const primary = res.data.sendAs?.find((s: any) => s.isPrimary);
-    return { content: [{ type: "text", text: fenceEmailContent(primary?.signature ?? "(no signature set)") }] };
+    return { content: [{ type: "text", text: primary?.signature ? ctx.fence.body(primary.signature, true) : ctx.fence.content("(no signature set)") }] };
   }, "signatures"
 );
 
@@ -187,7 +196,7 @@ registerTool(
     const res = await gmail.users.settings.getVacation({ userId: "me" });
     const v = res.data;
     const status = v.enableAutoReply ? "enabled" : "disabled";
-    const text = [`**Status:** ${status}`, v.responseSubject ? `**Subject:** ${fenceEmailContent(v.responseSubject, "subject")}` : "", v.responseBodyHtml ? `**Body:** ${fenceEmailContent(v.responseBodyHtml)}` : ""].filter(Boolean).join("\n");
+    const text = [`**Status:** ${status}`, v.responseSubject ? `**Subject:** ${ctx.fence.content(v.responseSubject, "subject")}` : "", v.responseBodyHtml ? `**Body:** ${ctx.fence.body(v.responseBodyHtml, true)}` : ""].filter(Boolean).join("\n");
     return { content: [{ type: "text", text }] };
   }, "vacation"
 );
@@ -225,7 +234,7 @@ registerTool(
     const res = await gmail.users.messages.get({ userId: "me", id: args.message_id as string, format: "metadata", metadataHeaders: ["List-Unsubscribe"] });
     const header = res.data.payload?.headers?.find((h: any) => h.name?.toLowerCase() === "list-unsubscribe");
     if (!header?.value) return { content: [{ type: "text", text: "No List-Unsubscribe header found on this message." }], isError: true };
-    return { content: [{ type: "text", text: `Unsubscribe link: ${fenceEmailContent(header.value)}\n\nOpen this URL to unsubscribe.` }] };
+    return { content: [{ type: "text", text: `Unsubscribe link: ${ctx.fence.content(header.value)}\n\nOpen this URL to unsubscribe.` }] };
   }, "unsubscribe"
 );
 
@@ -240,7 +249,7 @@ registerTool(
       const headers = res.data.payload?.headers ?? [];
       const from = headers.find((h: any) => h.name === "From")?.value ?? "unknown";
       const unsub = headers.find((h: any) => h.name?.toLowerCase() === "list-unsubscribe")?.value;
-      results.push(unsub ? `- ${fenceEmailHeader(from, "from")}: ${fenceEmailContent(unsub)}` : `- ${fenceEmailHeader(from, "from")}: no unsubscribe link`);
+      results.push(unsub ? `- ${ctx.fence.header(from, "from")}: ${ctx.fence.content(unsub)}` : `- ${ctx.fence.header(from, "from")}: no unsubscribe link`);
     }
     return { content: [{ type: "text", text: results.join("\n") }] };
   }, "unsubscribe"
@@ -288,7 +297,7 @@ registerTool(
       html: args.html as boolean | undefined,
       attachments,
     };
-    const rawBuffer = buildEmailBuffer(args.to as string[], args.subject as string, args.body as string, encodeOpts);
+    const rawBuffer = buildEmailBuffer(args.to as string[], stripFencing(args.subject as string), stripFencing(args.body as string), encodeOpts);
     if (shouldUseMediaUpload(rawBuffer, encodeOpts)) {
       await gmail.users.drafts.update({
         userId: "me",

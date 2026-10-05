@@ -1,5 +1,6 @@
 import { registerTool } from "./registry.js";
 import { clearSendLimit } from "./write.js";
+import type { AccountGuards } from "../accounts.js";
 
 registerTool(
   {
@@ -13,7 +14,14 @@ registerTool(
     if (entries.length === 0) {
       return { content: [{ type: "text", text: "No accounts configured. Use authenticate to add one." }] };
     }
-    const lines = entries.map(([alias, config]) => `- **${alias}** (${config.provider}): ${config.email}`);
+    const lines = entries.map(([alias, config]) => {
+      const flags: string[] = [];
+      if (config.readOnly) flags.push("read-only");
+      if (config.draftsOnly) flags.push("drafts-only");
+      if (config.allowedRecipients?.length) flags.push(`allowlist: ${config.allowedRecipients.join(", ")}`);
+      if (config.dailySendLimit !== undefined) flags.push(`daily send limit: ${config.dailySendLimit}`);
+      return `- **${alias}** (${config.provider}): ${config.email}${flags.length ? ` [${flags.join("; ")}]` : ""}`;
+    });
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }
 );
@@ -35,6 +43,10 @@ registerTool(
         username: { type: "string", description: "IMAP/SMTP username (IMAP only)" },
         password: { type: "string", description: "IMAP/SMTP password or app password (IMAP only)" },
         sessionUrl: { type: "string", description: "JMAP session URL override (JMAP only, auto-discovered from host by default)" },
+        read_only: { type: "boolean", description: "Refuse every write tool on this account (search and read still work). Can only be turned off by editing accounts.json." },
+        drafts_only: { type: "boolean", description: "Send tools create drafts instead of sending. Can only be turned off by editing accounts.json." },
+        allowed_recipients: { type: "array", items: { type: "string" }, description: "Recipient allowlist: exact addresses and/or @domain patterns. Sends to anyone else are refused. Can only be changed by editing accounts.json." },
+        daily_send_limit: { type: "number", description: "Maximum messages this account may send per rolling 24 hours (default 100)." },
       },
       required: ["alias", "provider", "email"],
     },
@@ -43,9 +55,14 @@ registerTool(
     const alias = args.alias as string;
     const provider = args.provider as string;
     const email = args.email as string;
+    const guards: AccountGuards = {};
+    if (args.read_only === true) guards.readOnly = true;
+    if (args.drafts_only === true) guards.draftsOnly = true;
+    if (Array.isArray(args.allowed_recipients)) guards.allowedRecipients = args.allowed_recipients as string[];
+    if (typeof args.daily_send_limit === "number") guards.dailySendLimit = args.daily_send_limit;
 
     if (provider === "gmail") {
-      ctx.accountManager.addAccount(alias, { provider: "gmail", email });
+      ctx.accountManager.addAccount(alias, { provider: "gmail", email, ...guards });
       const { authenticateGmail } = await import("../auth/gmail-oauth.js");
       await authenticateGmail(ctx.accountManager.getConfigDir(), alias);
       return { content: [{ type: "text", text: `Gmail account "${alias}" (${email}) authenticated successfully.` }] };
@@ -68,7 +85,7 @@ registerTool(
         return { content: [{ type: "text", text: "IMAP accounts require a passphrase for credential encryption. Set MAILBOX_MCP_PASSPHRASE in the server environment." }], isError: true };
       }
 
-      ctx.accountManager.addAccount(alias, { provider: "imap", email, host, port, smtpHost, smtpPort });
+      ctx.accountManager.addAccount(alias, { provider: "imap", email, host, port, smtpHost, smtpPort, ...guards });
       const { encryptCredentials } = await import("../auth/imap-auth.js");
       encryptCredentials(ctx.accountManager.getConfigDir(), alias, { username, password }, passphrase);
       return { content: [{ type: "text", text: `IMAP account "${alias}" (${email}) configured. Credentials encrypted.` }] };
@@ -103,7 +120,7 @@ registerTool(
         }
       }
 
-      const config: any = { provider: "jmap" as const, email, host };
+      const config: any = { provider: "jmap" as const, email, host, ...guards };
       if (sessionUrl) config.sessionUrl = sessionUrl;
       ctx.accountManager.addAccount(alias, config);
       const { encryptJmapCredentials } = await import("../auth/jmap-auth.js");

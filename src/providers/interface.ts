@@ -12,6 +12,8 @@ export interface EmailSummary {
 
 export interface EmailMessage extends EmailSummary {
   body: string;
+  /** True when `body` is the HTML part (no text/plain part was available). */
+  bodyIsHtml?: boolean;
   cc: string[];
   bcc: string[];
   replyTo?: string;
@@ -146,4 +148,9 @@ export interface MailProvider {
   countUnreadByLabel(): Promise<UnreadCount[]>;
   exportMessage(messageId: string): Promise<ExportedMessage>;
   messagesSince(since: string, folder?: string, maxResults?: number): Promise<EmailSummary[]>;
+
+  /** Whether any message on the account was sent to or received from `address`. Used by the new-recipient check. */
+  hasCorrespondedWith?(address: string): Promise<boolean>;
+  /** To/Cc/Bcc of an existing draft, so send_draft can run the recipient guards. */
+  getDraftRecipients?(draftId: string): Promise<string[]>;
 }

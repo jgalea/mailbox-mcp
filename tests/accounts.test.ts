@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { AccountManager } from "../src/accounts.js";
-import { existsSync, mkdtempSync, rmSync } from "node:fs";
+import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -73,5 +73,39 @@ describe("AccountManager", () => {
     expect(() =>
       manager.addAccount("../evil", { provider: "gmail", email: "a@b.com" })
     ).toThrow("Invalid alias");
+  });
+
+  it("persists per-account guard settings", () => {
+    manager.addAccount("locked", {
+      provider: "gmail", email: "user@example.com",
+      readOnly: true, draftsOnly: true, allowedRecipients: ["boss@example.com", "@example.org"], dailySendLimit: 5,
+    });
+    const reloaded = new AccountManager(tempDir).getAccount("locked");
+    expect(reloaded.readOnly).toBe(true);
+    expect(reloaded.draftsOnly).toBe(true);
+    expect(reloaded.allowedRecipients).toEqual(["boss@example.com", "@example.org"]);
+    expect(reloaded.dailySendLimit).toBe(5);
+  });
+
+  it("rejects malformed allowlist entries and limits", () => {
+    expect(() => manager.addAccount("a", { provider: "gmail", email: "u@example.com", allowedRecipients: ["not-an-address"] })).toThrow("allowedRecipients");
+    expect(() => manager.addAccount("b", { provider: "gmail", email: "u@example.com", allowedRecipients: ["example.com"] })).toThrow("allowedRecipients");
+    expect(() => manager.addAccount("c", { provider: "gmail", email: "u@example.com", dailySendLimit: -1 })).toThrow("dailySendLimit");
+    expect(() => manager.addAccount("d", { provider: "gmail", email: "u@example.com", dailySendLimit: 1.5 })).toThrow("dailySendLimit");
+    expect(manager.listAccounts()).toEqual({});
+  });
+
+  it("refuses to load an accounts.json with a malformed allowlist", () => {
+    writeFileSync(join(tempDir, "accounts.json"), JSON.stringify({ accounts: { x: { provider: "gmail", email: "u@example.com", allowedRecipients: "boss@example.com" } } }));
+    expect(() => new AccountManager(tempDir)).toThrow(/account "x"/);
+  });
+
+  it("honours MAILBOX_MCP_CONFIG_DIR when no directory is given", () => {
+    process.env.MAILBOX_MCP_CONFIG_DIR = tempDir;
+    try {
+      expect(new AccountManager().getConfigDir()).toBe(tempDir);
+    } finally {
+      delete process.env.MAILBOX_MCP_CONFIG_DIR;
+    }
   });
 });

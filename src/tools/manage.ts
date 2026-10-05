@@ -1,4 +1,4 @@
-import { registerTool } from "./registry.js";
+import { registerTool, lookupAccount, readOnlyRefusal } from "./registry.js";
 import { recordTransaction, listTransactions, findTransaction, markReversed } from "../transactions.js";
 
 registerTool(
@@ -181,6 +181,7 @@ registerTool(
     const tx = findTransaction(args.op_id as string);
     if (!tx) return { content: [{ type: "text", text: `Op id "${args.op_id}" not found.` }], isError: true };
     if (tx.reversed_at) return { content: [{ type: "text", text: `Op ${tx.id} was already reversed at ${tx.reversed_at}.` }], isError: true };
+    if (lookupAccount(ctx, tx.account)?.readOnly) return readOnlyRefusal(tx.account);
     const provider = await ctx.getProvider(tx.account);
     // Inverse: swap add and remove. bulk_trash recorded add=["TRASH"]; undo removes TRASH.
     await provider.batchModifyLabels(tx.message_ids, tx.remove_labels, tx.add_labels);

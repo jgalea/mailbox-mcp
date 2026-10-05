@@ -165,11 +165,12 @@ function collectAttachmentNodes(node: any, out: any[] = []): any[] {
  * Walk a bodyStructure and return the part path of the most readable text part.
  * Prefer text/plain, fall back to text/html, skip anything marked as attachment.
  */
-function findReadableTextPart(bodyStructure: any): string | undefined {
+function findReadableTextPart(bodyStructure: any): { part: string; html: boolean } | undefined {
   if (!bodyStructure) return undefined;
   const plain = findTextPart(bodyStructure, "text/plain");
-  if (plain) return plain;
-  return findTextPart(bodyStructure, "text/html");
+  if (plain) return { part: plain, html: false };
+  const html = findTextPart(bodyStructure, "text/html");
+  return html ? { part: html, html: true } : undefined;
 }
 
 function findTextPart(node: any, target: string): string | undefined {
@@ -339,15 +340,18 @@ export class ImapProvider implements MailProvider {
 
       const textPart = findReadableTextPart(meta.bodyStructure);
       let body = "";
+      let bodyIsHtml = false;
       if (textPart) {
         // download() decodes transfer-encoding (base64/quoted-printable) and
         // converts non-UTF-8 charsets to UTF-8 for text parts.
-        const dl = await this.imap.download(uid, textPart, { uid: true });
+        const dl = await this.imap.download(uid, textPart.part, { uid: true });
         if (dl?.content) body = await readStreamToString(dl.content);
+        bodyIsHtml = textPart.html;
       } else if (!meta.bodyStructure?.childNodes) {
         // Single-part message with no explicit part path.
         const dl = await this.imap.download(uid, "TEXT", { uid: true });
         if (dl?.content) body = await readStreamToString(dl.content);
+        bodyIsHtml = nodeMimeType(meta.bodyStructure) === "text/html";
       }
 
       return {
@@ -363,6 +367,7 @@ export class ImapProvider implements MailProvider {
         labels: [],
         hasAttachments: (meta.bodyStructure?.childNodes?.length ?? 0) > 0,
         body,
+        bodyIsHtml: bodyIsHtml || undefined,
         attachments: extractImapAttachments(meta.bodyStructure),
       };
     } finally {
@@ -607,6 +612,28 @@ export class ImapProvider implements MailProvider {
         snippet: "",
         updatedAt: (msg.internalDate ?? msg.envelope?.date)?.toISOString?.() ?? "",
       }));
+    } finally {
+      lock.release();
+    }
+  }
+
+  async hasCorrespondedWith(address: string): Promise<boolean> {
+    const lock = await this.imap.getMailboxLock("INBOX");
+    try {
+      const uids = await this.imap.search({ or: [{ from: address }, { to: address }] }, { uid: true });
+      return (uids || []).length > 0;
+    } finally {
+      lock.release();
+    }
+  }
+
+  async getDraftRecipients(draftId: string): Promise<string[]> {
+    const { folder, uid } = parseImapMessageId(draftId);
+    const lock = await this.imap.getMailboxLock(folder);
+    try {
+      const msg: any = await this.imap.fetchOne(uid, { envelope: true, uid: true }, { uid: true });
+      if (!msg) throw new Error(`Draft ${draftId} not found`);
+      return [...formatAddresses(msg.envelope?.to), ...formatAddresses(msg.envelope?.cc), ...formatAddresses(msg.envelope?.bcc)];
     } finally {
       lock.release();
     }

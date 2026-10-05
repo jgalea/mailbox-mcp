@@ -1,6 +1,28 @@
 # Changelog
 
-## Unreleased
+## 0.11.0 — 2026-10-05
+
+Prompt-injection and exfiltration hardening. Two defaults change for existing users: sends to an address the account has never written to or heard from now need `confirm_new_recipient: true`, and `forward_email` to a domain other than the account's own needs `confirm_external_forward: true`. Everything else is opt-in per account. See the Security section of the README.
+
+### Added
+- **HTML bodies are reduced to what a mail client would show.** When a message has no text/plain part, the HTML part used to be handed to the model as-is, hidden instructions included. It is now converted to visible text: elements hidden with `display:none`, `visibility:hidden`, `opacity:0`, zero or near-zero `font-size`, text the same colour as its background (white-on-white included), the `hidden` attribute, `aria-hidden`, off-screen positioning and the preheader `max-height:0; overflow:hidden` trick are dropped, along with HTML comments, `<script>`, `<style>`, `<head>`, `<template>` and `<noscript>`. Simple class, id and tag rules in `<style>` blocks are applied too. Applies to `read_email`, `read_thread`, `get_signature` and `get_vacation` on every provider.
+- **Invisible characters are stripped from all untrusted text.** Zero-width spaces and joiners, bidirectional controls and BOMs (U+200B to U+200F, U+202A to U+202E, U+2060 to U+2064, U+2066 to U+2069, U+FEFF) are removed from bodies, subjects, headers and filenames before they reach the model.
+- **Nothing is dropped silently.** When hidden text or invisible characters were removed, the response ends with a warning line, outside the fence, saying how many characters went and that this is a known prompt-injection technique.
+- **Per-response random fences.** The fixed `[UNTRUSTED_*]` markers are now `[UNTRUSTED_<KIND>_<nonce>]`, with a fresh 8-hex-character nonce for every tool response, so email content cannot forge a closing marker. The escape of anything fence-like inside content is now case-insensitive and also catches fullwidth, mathematical, Cyrillic and Greek lookalikes of the bracket, slash and letters. The server instructions explain the nonce to the client.
+- **Fences never reach a recipient.** Every outgoing subject and body (`send_email`, `reply_email`, `forward_email`, `create_draft`, `update_draft`, `send_template`) is passed through `stripFencing`, which removes markers in both the new and the old format.
+- **New-recipient confirmation.** Send tools refuse recipients the account has never sent to (per the local send log) or received from (one cheap provider search) unless `confirm_new_recipient: true` is passed; the error lists the new addresses. Reply targets taken from the original message are trusted; extra cc/bcc are checked.
+- **External-forward confirmation.** `forward_email` to any domain other than the account's own needs `confirm_external_forward: true`.
+- **Per-account recipient allowlist** (`allowedRecipients`: exact addresses and `@domain` patterns). Sends, replies, forwards and drafts to anyone else are refused.
+- **Per-account `draftsOnly` mode.** Send tools create a draft instead and say so; `send_draft` refuses.
+- **Per-account `readOnly` mode.** Every tool whose `readOnlyHint` is false refuses for that account; search and read keep working.
+- **Daily send cap** (`dailySendLimit`, default 100 per rolling 24 hours) on top of the 10-per-minute limit, counted from `~/.mailbox-mcp/sends.jsonl` so a restart does not reset it.
+- **MCP tool annotations on all 49 tools** (`readOnlyHint`, `destructiveHint`, `idempotentHint`, `openWorldHint`), so clients can auto-approve reads and always ask before writes.
+- `authenticate` accepts `read_only`, `drafts_only`, `allowed_recipients` and `daily_send_limit`; `list_accounts` shows them. No tool can loosen them: that takes an edit to `accounts.json`.
+- `MAILBOX_MCP_CONFIG_DIR` overrides the config directory (default `~/.mailbox-mcp`).
+
+### Changed
+- `send_draft` now looks up the draft's recipients and runs the same guards as `send_email`.
+- SIGTERM is treated as a soft stop: the server exits only if stdin is also gone within two seconds, since the harness delivers collateral SIGTERMs to healthy servers.
 
 ### Fixed
 - **`create_filter` rejected every label with "Invalid label".** Gmail's filter API takes label *IDs*, but the tool passed the label *name* straight into `addLabelIds`/`removeLabelIds`, so a filter could never be created against a real label. Names are now resolved to IDs (case-insensitively; values already in ID form pass through), and an unknown name fails with the list of labels that do exist. `modify_email` and the bulk label tools had the same latent bug and now resolve names too. `create_filter` also takes `create_label` to create the target label when it's missing, and refuses a filter with no criteria instead of creating one that matches everything.
