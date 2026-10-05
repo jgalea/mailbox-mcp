@@ -36,7 +36,15 @@ Giving a model access to a mailbox means giving it access to text written by str
 
 **Caps and a log.** At most 10 sends per minute and, by default, 100 per rolling 24 hours per account; the daily count is kept on disk and survives restarts. Every send through the server is recorded in `~/.mailbox-mcp/sends.jsonl` with its recipients, and every bulk label or trash operation in `transactions.jsonl` with an undo id.
 
-None of this makes prompt injection impossible. A model can still be talked into a reply you didn't want, and a text/plain part can say something different from the HTML part a human sees. Keep a human approving sends. A reasonable setup: `readOnly: true` on accounts you only need to search, an allowlist (or `draftsOnly`) on any account an agent sends from unattended, and the default confirmations everywhere else.
+The three options below enforce limits outside the model instead of asking it to behave. All are off by default.
+
+**Out-of-band approval** (`"approval": "external"` per account). Every send path still runs the guards above, then writes the fully resolved message to `~/.mailbox-mcp/pending/<id>.json` instead of sending it, and tells the model the id. No tool can list, edit or approve that queue. You do it in a terminal: `mailbox-mcp pending`, `mailbox-mcp show <id>`, `mailbox-mcp approve <id>`, `mailbox-mcp reject <id>`. `approve` prints the whole message, reads the confirmation from `/dev/tty` (not stdin, so it cannot be piped), re-runs the allowlist and daily cap, reloads attachments and refuses if one changed, then sends exactly what it printed. A shell without a controlling terminal, which is what an agent's shell is, cannot open `/dev/tty`, so it cannot approve its own sends. Entries expire after 7 days. See [Approving queued sends](#approving-queued-sends).
+
+**Tool profiles** (`MAILBOX_MCP_PROFILE`). `read` exposes only read-only tools; `draft` exposes everything except the tools that can make mail leave the account. Hidden tools are absent from the tool list and refuse if called anyway. See [Choosing which tools load](#choosing-which-tools-load).
+
+**Lock after untrusted reads** (`"untrustedReadLock": "approval" | "refuse"` per account). As soon as a tool shows the model mail from a sender the account has never written to (not in the local send log, not in the provider's Sent folder; having received mail from them does not count), or exports or downloads message content to disk, the account is marked for the rest of the server process. `approval` then routes every send from it through the pending queue even if `approval` isn't set; `refuse` refuses sends until the server restarts. A From header that could be parsed two ways (several addresses, a display name with its own angle brackets or `@`, invisible characters, no address at all) counts as untrusted. No argument the model can pass lifts it.
+
+None of this makes prompt injection impossible. A model can still be talked into a reply you didn't want, and a text/plain part can say something different from the HTML part a human sees. Keep a human approving sends. A reasonable setup: `readOnly: true` or `MAILBOX_MCP_PROFILE=read` on accounts you only need to search, `approval: "external"` or an allowlist on any account an agent sends from unattended, `untrustedReadLock` on anything that triages an inbox, and the default confirmations everywhere else.
 
 ## Quick Start
 
@@ -191,7 +199,7 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 
 ## Account safety settings
 
-Each entry in `~/.mailbox-mcp/accounts.json` can carry four optional fields:
+Each entry in `~/.mailbox-mcp/accounts.json` can carry six optional fields:
 
 ```json
 {
@@ -203,7 +211,9 @@ Each entry in `~/.mailbox-mcp/accounts.json` can carry four optional fields:
       "allowedRecipients": ["ops@example.com", "@example.com"],
       "dailySendLimit": 20
     },
-    "personal": { "provider": "gmail", "email": "me@example.com", "draftsOnly": true }
+    "personal": { "provider": "gmail", "email": "me@example.com", "draftsOnly": true },
+    "work": { "provider": "gmail", "email": "me@work.example", "approval": "external", "untrustedReadLock": "approval" },
+    "triage": { "provider": "gmail", "email": "inbox@example.com", "untrustedReadLock": "refuse" }
   }
 }
 ```
@@ -211,11 +221,36 @@ Each entry in `~/.mailbox-mcp/accounts.json` can carry four optional fields:
 | Field | Effect |
 |-------|--------|
 | `readOnly` | Every tool that isn't read-only refuses for this account with a clear error. Search, read, list and export still work. |
-| `draftsOnly` | `send_email`, `reply_email`, `forward_email` and `send_template` create a draft instead and say so; `send_draft` refuses. The allowlist still applies; the confirmations and daily cap don't, since nothing leaves. |
+| `draftsOnly` | `send_email`, `reply_email`, `forward_email` and `send_template` create a draft instead and say so; `send_draft` refuses. The allowlist still applies; the confirmations and daily cap don't, since nothing leaves. Takes precedence over `approval`. |
 | `allowedRecipients` | Exact addresses and `@domain` patterns (a domain pattern matches that domain only, not subdomains). Sends, replies, forwards and drafts to any other address are refused. |
 | `dailySendLimit` | Sends allowed per rolling 24 hours (default 100; `0` blocks all sending). Counted from `sends.jsonl`, so restarts don't reset it. |
+| `approval` | `"external"`: `send_email`, `reply_email`, `forward_email`, `send_draft` and `send_template` run every guard, then queue the message under `~/.mailbox-mcp/pending/` instead of sending. Only `mailbox-mcp approve <id>` in a terminal sends it. |
+| `untrustedReadLock` | `"approval"` or `"refuse"`. Once any tool has shown this session mail from a sender the account never wrote to, or exported message content to disk, sends from the account are queued for approval or refused until the server restarts. In-memory only; nothing the model calls can clear it. |
 
-The same settings can be passed to `authenticate` as `read_only`, `drafts_only`, `allowed_recipients` and `daily_send_limit` when the account is created, and `list_accounts` shows them. There is deliberately no tool to change them afterwards: edit the file and restart the server. Malformed entries make the server refuse to start rather than run unguarded.
+The same settings can be passed to `authenticate` as `read_only`, `drafts_only`, `allowed_recipients`, `daily_send_limit`, `approval` and `untrusted_read_lock` when the account is created, and `list_accounts` shows them. There is deliberately no tool to change them afterwards: edit the file and restart the server. Malformed entries make the server refuse to start rather than run unguarded.
+
+### Approving queued sends
+
+The same binary that runs the server is the approval CLI. With no arguments it starts the MCP server; with a command it works the queue and exits.
+
+```
+mailbox-mcp pending        # id, account, from, recipients, subject, created, attachment names
+mailbox-mcp show <id>      # the full message
+mailbox-mcp approve <id>   # prints the message, asks "Type yes to send", sends exactly that
+mailbox-mcp reject <id>    # drops it
+```
+
+If you installed with `npx`, run `npx mailbox-mcp pending` and so on. The config directory is the same one the server uses (`MAILBOX_MCP_CONFIG_DIR`, default `~/.mailbox-mcp`), so set it the same way if you changed it.
+
+`approve` reads the confirmation from `/dev/tty`, never stdin, and refuses with a clear error when it cannot open it. That is what stops an agent with shell access from approving its own sends: its shell has no controlling terminal. What it prints is what it sends: the entry is read once into memory through a descriptor that refuses symlinks, and the file's hash is checked again right before sending. A message containing terminal escapes, bidirectional overrides or zero-width characters, which could make the screen show something other than what goes out, is refused outright. At approval time it re-runs the allowlist and daily cap against the current `accounts.json`, reloads every attachment from the path recorded at queue time and refuses if the file is gone or its size changed, records the send in `sends.jsonl` like any other, and deletes the pending file. Entries older than 7 days are refused; reject them to clean up. The pending directory is created `0700` and files `0600`.
+
+For reply and forward, the queued body is your text; threading headers and the forwarded original are added by the provider at send time, as `show` says. For `send_draft` the queue holds the draft id, its recipients and a fingerprint of the draft as it was; `approve` refuses if the draft or its recipients changed since, so an `update_draft` after queueing cannot ride on an earlier review. Review the body in your mail client.
+
+If the agent runs inside Claude Code, add the approve command to the deny list in `.claude/settings.json` so even a permission prompt never offers it:
+
+```json
+{ "permissions": { "deny": ["Bash(mailbox-mcp approve*)", "Bash(npx mailbox-mcp approve*)"] } }
+```
 
 How "new recipient" is decided: an address is known if this server has sent to it before from that account (the `sends.jsonl` log), if it is the account's own address, or if one provider search (`from:addr OR to:addr`, limited to one result; INBOX only on IMAP) finds a message. Anything else needs `confirm_new_recipient: true`. Reply targets taken from the message being replied to are trusted, since you already received mail from them.
 
@@ -238,6 +273,22 @@ How "new recipient" is decided: an address is known if this server has sent to i
 | `gmail-extras` | 14 | filters, templates, signatures, vacation, unsubscribe, send-as |
 
 Calls to tools in disabled groups fail with an error naming the group to enable.
+
+### Tool profiles
+
+`MAILBOX_MCP_PROFILE` picks what kind of instance this is. It composes with `MAILBOX_MCP_TOOLS`: a tool loads only when both allow it. Hidden tools are missing from the tool list and refuse if called anyway, with an error naming the profile. An unknown value stops the server at startup.
+
+| Profile | Tools |
+|---------|-------|
+| `full` (default) | everything, as before |
+| `draft` | everything except the ten below |
+| `read` | only tools annotated `readOnlyHint: true` (the 18 search, read, list and get tools, `unsubscribe` and `bulk_unsubscribe` included since they only return links) |
+
+`draft` hides, because each can make mail leave the account or change what future mail says to a third party: `send_email`, `reply_email`, `forward_email`, `send_draft`, `send_template` (they send), `create_filter` (Gmail filters can forward and auto-file), `set_vacation` (sends auto-replies), `set_signature` (text injected into every future message you send), `unsubscribe` and `bulk_unsubscribe` (they surface attacker-chosen unsubscribe targets to act on). Drafts, labels, archiving, trash, bulk operations with undo, downloads and exports all stay available.
+
+```json
+"env": { "MAILBOX_MCP_PROFILE": "draft", "MAILBOX_MCP_TOOLS": "core,attachments" }
+```
 
 ## Sending attachments
 

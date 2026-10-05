@@ -576,3 +576,32 @@ describe("ImapProvider", () => {
     expect(mockImap.fetch).not.toHaveBeenCalled();
   });
 });
+
+describe("ImapProvider untrusted-read lock support", () => {
+  it("hasSentTo searches the discovered Sent folder by recipient, not INBOX", async () => {
+    const mockImap = createMockImapClient();
+    const provider = new ImapProvider(mockImap as any, createMockTransport() as any, "test@example.com");
+    mockImap.list.mockResolvedValue([{ path: "INBOX", specialUse: "\\Inbox" }, { path: "Sent Items", specialUse: "\\Sent" }]);
+    mockImap.search.mockResolvedValueOnce([42]).mockResolvedValueOnce([]);
+    expect(await provider.hasSentTo("friend@example.net")).toBe(true);
+    expect(mockImap.getMailboxLock).toHaveBeenCalledWith("Sent Items");
+    expect(mockImap.search).toHaveBeenCalledWith({ to: "friend@example.net" }, { uid: true });
+    expect(await provider.hasSentTo("stranger@example.net")).toBe(false);
+  });
+
+  it("draftFingerprint changes with uid, size or envelope", async () => {
+    const mockImap = createMockImapClient();
+    const provider = new ImapProvider(mockImap as any, createMockTransport() as any, "test@example.com");
+    const msg = (size: number, subject: string) => ({ uid: 7, size, envelope: { subject, to: [{ address: "a@example.net" }] } });
+    mockImap.fetchOne.mockResolvedValue(msg(100, "Hi"));
+    const base = await provider.draftFingerprint("Drafts:7");
+    expect(base).toMatch(/^[0-9a-f]{64}$/);
+    expect(await provider.draftFingerprint("Drafts:7")).toBe(base);
+    expect(await provider.draftFingerprint("Drafts:8")).not.toBe(base);
+    mockImap.fetchOne.mockResolvedValueOnce(msg(101, "Hi"));
+    expect(await provider.draftFingerprint("Drafts:7")).not.toBe(base);
+    mockImap.fetchOne.mockResolvedValueOnce(msg(100, "Hello"));
+    expect(await provider.draftFingerprint("Drafts:7")).not.toBe(base);
+    expect(mockImap.fetchOne).toHaveBeenLastCalledWith(7, { envelope: true, size: true, uid: true }, { uid: true });
+  });
+});

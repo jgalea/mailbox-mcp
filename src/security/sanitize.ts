@@ -60,6 +60,8 @@ export class ResponseFence {
   readonly nonce: string;
   hiddenTextChars = 0;
   invisibleChars = 0;
+  /** Every From value rendered in this response, so the registry can apply the untrusted-read lock. */
+  readonly senders: string[] = [];
 
   constructor(nonce: string = newFenceNonce()) {
     this.nonce = nonce;
@@ -84,6 +86,7 @@ export class ResponseFence {
   }
 
   header(value: string, field: string): string {
+    if (field === "from") this.senders.push(value);
     return this.wrap(`UNTRUSTED_${field.toUpperCase()}`, value);
   }
 

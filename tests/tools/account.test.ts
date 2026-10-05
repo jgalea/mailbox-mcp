@@ -33,6 +33,32 @@ describe("account tools", () => {
     expect(result.content[0].text).toContain("user@example.com");
   });
 
+  it("list_accounts shows approval and the untrusted-read lock like the other flags", async () => {
+    ctx.accountManager.addAccount("gated", { provider: "gmail", email: "user@example.com", approval: "external", untrustedReadLock: "refuse", readOnly: false });
+    const result = await handleToolCall("list_accounts", {}, ctx);
+    expect(result.content[0].text).toContain("approval: external");
+    expect(result.content[0].text).toContain("untrusted-read lock: refuse");
+    expect(result.content[0].text).not.toContain("read-only");
+  });
+
+  it("authenticate accepts approval and untrusted_read_lock and ignores other values", async () => {
+    process.env.MAILBOX_MCP_PASSPHRASE = "test-passphrase";
+    try {
+      const imap = { provider: "imap", host: "imap.example.com", smtpHost: "smtp.example.com", username: "u", password: "p" };
+      const ok = await handleToolCall("authenticate", { ...imap, alias: "gated", email: "u@example.com", approval: "external", untrusted_read_lock: "approval" }, ctx);
+      expect(ok.isError).toBeUndefined();
+      expect(ctx.accountManager.getAccount("gated")).toMatchObject({ approval: "external", untrustedReadLock: "approval" });
+
+      const loose = await handleToolCall("authenticate", { ...imap, alias: "plain", email: "p@example.com", approval: "none", untrusted_read_lock: "maybe" }, ctx);
+      expect(loose.isError).toBeUndefined();
+      const plain = ctx.accountManager.getAccount("plain");
+      expect(plain.approval).toBeUndefined();
+      expect(plain.untrustedReadLock).toBeUndefined();
+    } finally {
+      delete process.env.MAILBOX_MCP_PASSPHRASE;
+    }
+  });
+
   it("remove_account removes an existing account", async () => {
     ctx.accountManager.addAccount("temp", { provider: "gmail", email: "temp@gmail.com" });
     const result = await handleToolCall("remove_account", { alias: "temp" }, ctx);

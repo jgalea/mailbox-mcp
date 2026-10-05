@@ -12,6 +12,10 @@ export interface AccountGuards {
   draftsOnly?: boolean;
   allowedRecipients?: string[];
   dailySendLimit?: number;
+  /** "external": sends are queued to disk and only leave after `mailbox-mcp approve <id>` in a terminal. */
+  approval?: "external";
+  /** What happens to sends once this session has read mail from a sender the account never wrote to. */
+  untrustedReadLock?: "approval" | "refuse";
 }
 
 export interface GmailAccountConfig extends AccountGuards {
@@ -59,6 +63,12 @@ export function validateGuards(guards: AccountGuards): void {
     if (!Number.isInteger(guards.dailySendLimit) || guards.dailySendLimit < 0) {
       throw new Error("dailySendLimit must be a non-negative integer");
     }
+  }
+  if (guards.approval !== undefined && guards.approval !== "external") {
+    throw new Error(`approval must be "external" (got ${JSON.stringify(guards.approval)})`);
+  }
+  if (guards.untrustedReadLock !== undefined && guards.untrustedReadLock !== "approval" && guards.untrustedReadLock !== "refuse") {
+    throw new Error(`untrustedReadLock must be "approval" or "refuse" (got ${JSON.stringify(guards.untrustedReadLock)})`);
   }
 }
 

@@ -95,6 +95,22 @@ describe("AccountManager", () => {
     expect(manager.listAccounts()).toEqual({});
   });
 
+  it("persists approval and untrustedReadLock", () => {
+    manager.addAccount("gated", { provider: "gmail", email: "user@example.com", approval: "external", untrustedReadLock: "refuse" });
+    const reloaded = new AccountManager(tempDir).getAccount("gated");
+    expect(reloaded.approval).toBe("external");
+    expect(reloaded.untrustedReadLock).toBe("refuse");
+  });
+
+  it("rejects unknown approval and untrustedReadLock values", () => {
+    expect(() => manager.addAccount("a", { provider: "gmail", email: "u@example.com", approval: true as any })).toThrow(/approval must be "external"/);
+    expect(() => manager.addAccount("b", { provider: "gmail", email: "u@example.com", approval: "internal" as any })).toThrow(/approval must be "external"/);
+    expect(() => manager.addAccount("c", { provider: "gmail", email: "u@example.com", untrustedReadLock: "block" as any })).toThrow(/untrustedReadLock must be "approval" or "refuse"/);
+    expect(manager.listAccounts()).toEqual({});
+    writeFileSync(join(tempDir, "accounts.json"), JSON.stringify({ accounts: { x: { provider: "gmail", email: "u@example.com", untrustedReadLock: true } } }));
+    expect(() => new AccountManager(tempDir)).toThrow(/account "x".*untrustedReadLock/);
+  });
+
   it("refuses to load an accounts.json with a malformed allowlist", () => {
     writeFileSync(join(tempDir, "accounts.json"), JSON.stringify({ accounts: { x: { provider: "gmail", email: "u@example.com", allowedRecipients: "boss@example.com" } } }));
     expect(() => new AccountManager(tempDir)).toThrow(/account "x"/);

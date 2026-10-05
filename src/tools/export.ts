@@ -1,6 +1,7 @@
 import { join, basename } from "node:path";
 import { writeFileSync, mkdirSync, existsSync, chmodSync } from "node:fs";
-import { registerTool } from "./registry.js";
+import { registerTool, lookupAccount } from "./registry.js";
+import { markTainted } from "../security/taint.js";
 import { validateAttachmentPath } from "../security/validation.js";
 import { DEFAULT_DOWNLOAD_DIR, validateSavePath } from "../security/save-path.js";
 
@@ -21,6 +22,8 @@ registerTool(
   async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const result = await provider.exportMessage(args.message_id as string);
+    // The raw message leaves the fence entirely, sender unknown, so the lock treats it as untrusted content.
+    markTainted(args.account as string, lookupAccount(ctx, args.account as string), "export_email", `exported message ${args.message_id}`);
 
     validateAttachmentPath(result.filename);
     const safeName = basename(result.filename);
@@ -55,6 +58,7 @@ registerTool(
   async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const thread = await provider.readThread(args.thread_id as string);
+    markTainted(args.account as string, lookupAccount(ctx, args.account as string), "export_thread", `exported thread ${args.thread_id}`);
 
     const dir = (args.save_to as string) ?? DEFAULT_DOWNLOAD_DIR;
     validateSavePath(dir);

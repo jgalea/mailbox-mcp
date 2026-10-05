@@ -337,3 +337,33 @@ describe("GmailProvider label resolution", () => {
     expect(body.removeLabelIds).toEqual(["INBOX"]);
   });
 });
+
+describe("GmailProvider untrusted-read lock support", () => {
+  it("hasSentTo searches the Sent folder only, one result at most", async () => {
+    const mockGmail = createMockGmail();
+    const provider = new GmailProvider(mockGmail as any);
+    mockGmail.users.messages.list.mockResolvedValueOnce({ data: { messages: [{ id: "m1" }] } }).mockResolvedValueOnce({ data: {} });
+    expect(await provider.hasSentTo("friend@example.net")).toBe(true);
+    expect(mockGmail.users.messages.list).toHaveBeenCalledWith({ userId: "me", q: "in:sent to:friend@example.net", maxResults: 1 });
+    expect(await provider.hasSentTo("stranger@example.net")).toBe(false);
+  });
+
+  it("draftFingerprint changes when the draft's message, headers or snippet change", async () => {
+    const mockGmail = createMockGmail();
+    (mockGmail.users.drafts as any).get = vi.fn();
+    const provider = new GmailProvider(mockGmail as any);
+    const draft = (id: string, to: string, snippet: string) => ({ data: { message: { id, snippet, payload: { headers: [{ name: "To", value: to }, { name: "Subject", value: "Hi" }] } } } });
+    mockGmail.users.drafts.get
+      .mockResolvedValueOnce(draft("msg-1", "a@example.net", "hello"))
+      .mockResolvedValueOnce(draft("msg-1", "a@example.net", "hello"))
+      .mockResolvedValueOnce(draft("msg-2", "a@example.net", "hello"))
+      .mockResolvedValueOnce(draft("msg-1", "b@example.net", "hello"))
+      .mockResolvedValueOnce(draft("msg-1", "a@example.net", "changed"));
+    const base = await provider.draftFingerprint("d1");
+    expect(base).toMatch(/^[0-9a-f]{64}$/);
+    expect(await provider.draftFingerprint("d1")).toBe(base);
+    expect(await provider.draftFingerprint("d1")).not.toBe(base);
+    expect(await provider.draftFingerprint("d1")).not.toBe(base);
+    expect(await provider.draftFingerprint("d1")).not.toBe(base);
+  });
+});

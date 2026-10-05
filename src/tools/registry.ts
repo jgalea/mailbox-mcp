@@ -2,6 +2,7 @@ import type { Tool, ToolAnnotations } from "@modelcontextprotocol/sdk/types.js";
 import type { MailProvider, ProviderCapabilities } from "../providers/interface.js";
 import type { AccountConfig, AccountManager } from "../accounts.js";
 import { ResponseFence } from "../security/sanitize.js";
+import { noteSenders } from "../security/taint.js";
 
 export interface ToolContext {
   accountManager: AccountManager;
@@ -113,8 +114,44 @@ function isToolEnabled(name: string): boolean {
   return groups.has(TOOL_GROUPS[name] ?? "core");
 }
 
+// Per-instance tool profile, selected with MAILBOX_MCP_PROFILE. Composes with
+// MAILBOX_MCP_TOOLS: a tool is exposed only when both allow it. "read" is
+// exactly the tools annotated readOnlyHint; "draft" is everything except the
+// tools below, which can make mail leave the account or change what future
+// mail says to a third party.
+export type ToolProfile = "full" | "draft" | "read";
+
+export const DRAFT_PROFILE_EXCLUDED = new Set([
+  "send_email", "reply_email", "forward_email", "send_draft", "send_template",
+  "create_filter", "set_vacation", "set_signature", "unsubscribe", "bulk_unsubscribe",
+]);
+
+export function activeProfile(): ToolProfile {
+  const raw = (process.env.MAILBOX_MCP_PROFILE ?? "").trim().toLowerCase();
+  if (raw === "" || raw === "full") return "full";
+  if (raw === "draft" || raw === "read") return raw;
+  throw new Error(`MAILBOX_MCP_PROFILE must be "full", "draft" or "read" (got "${process.env.MAILBOX_MCP_PROFILE}").`);
+}
+
+function isAllowedByProfile(name: string, profile: ToolProfile): boolean {
+  if (profile === "read") return TOOL_ANNOTATIONS[name]?.readOnlyHint === true;
+  if (profile === "draft") return !DRAFT_PROFILE_EXCLUDED.has(name);
+  return true;
+}
+
+function profileRefusal(name: string, profile: ToolProfile): ToolResult {
+  const why = profile === "read" ? "exposes read-only tools only" : "hides every tool that can make mail leave the account";
+  return {
+    content: [{ type: "text", text: `Tool "${name}" is not available: this server runs with MAILBOX_MCP_PROFILE="${profile}", which ${why}. The profile is set in the server's environment and cannot be changed from here.` }],
+    isError: true,
+  };
+}
+
 export function getAllToolDefinitions(): Tool[] {
-  return tools.filter((t) => isToolEnabled(t.definition.name)).map((t) => t.definition);
+  const profile = activeProfile();
+  return tools
+    .filter((t) => isToolEnabled(t.definition.name) && isAllowedByProfile(t.definition.name, profile))
+    .map((t) => t.definition);
 }
 
 export function sanitizeErrorMessage(message: string, redactTokens: (s: string) => string): string {
@@ -155,6 +192,8 @@ export async function handleToolCall(
       isError: true,
     };
   }
+  const profile = activeProfile();
+  if (!isAllowedByProfile(name, profile)) return profileRefusal(name, profile);
 
   const alias = typeof args.account === "string" ? args.account : undefined;
   if (alias && tool.definition.annotations?.readOnlyHint !== true && lookupAccount(ctx, alias)?.readOnly) {
@@ -181,6 +220,12 @@ export async function handleToolCall(
     const { redactTokens } = await import("../security/sanitize.js");
     const message = error instanceof Error ? error.message : String(error);
     return { content: [{ type: "text", text: sanitizeErrorMessage(message, redactTokens) }], isError: true };
+  }
+
+  // Tools without an account argument that render senders (multi_account_search)
+  // call noteSenders per account themselves.
+  if (alias && ctx.fence.senders.length > 0) {
+    await noteSenders(alias, lookupAccount(ctx, alias), () => ctx.getProvider(alias), name, ctx.fence.senders);
   }
 
   const warnings = ctx.fence.warnings();

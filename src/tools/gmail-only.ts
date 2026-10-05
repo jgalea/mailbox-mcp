@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { registerTool } from "./registry.js";
 import { stripFencing } from "../security/sanitize.js";
-import { gateOutgoing, isRefusal } from "./write.js";
+import { gateOutgoing, isRefusal, queueOutgoing } from "./write.js";
 import { recordSend } from "../sendlog.js";
 import { buildEmailBuffer, shouldUseMediaUpload, type GmailEncodeOptions, type GmailProvider } from "../providers/gmail.js";
 import { loadAttachments } from "../security/attachment-loader.js";
@@ -156,6 +156,9 @@ registerTool(
       const id = await gate.provider.createDraft(to, subject, body);
       return { content: [{ type: "text", text: `Account "${account}" is configured draftsOnly, so nothing was sent. Draft created from the template. Draft ID: ${id}` }] };
     }
+    if (gate.queueReason) {
+      return queueOutgoing(gate, { account, tool: "send_template", action: { kind: "send" }, to, cc: [], bcc: [], subject, body, attachments: [] });
+    }
     const id = await gate.provider.sendMessage(to, subject, body);
     recordSend(account, "send_template", to);
     return { content: [{ type: "text", text: `Sent from template. Message ID: ${id}` }] };
@@ -231,10 +234,12 @@ registerTool(
     inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" }, message_id: { type: "string", description: "Message ID from the mailing list" } }, required: ["account", "message_id"] } },
   async (args, ctx) => {
     const gmail = getGmailApi(await ctx.getProvider(args.account as string));
-    const res = await gmail.users.messages.get({ userId: "me", id: args.message_id as string, format: "metadata", metadataHeaders: ["List-Unsubscribe"] });
-    const header = res.data.payload?.headers?.find((h: any) => h.name?.toLowerCase() === "list-unsubscribe");
+    const res = await gmail.users.messages.get({ userId: "me", id: args.message_id as string, format: "metadata", metadataHeaders: ["List-Unsubscribe", "From"] });
+    const headers = res.data.payload?.headers ?? [];
+    const header = headers.find((h: any) => h.name?.toLowerCase() === "list-unsubscribe");
     if (!header?.value) return { content: [{ type: "text", text: "No List-Unsubscribe header found on this message." }], isError: true };
-    return { content: [{ type: "text", text: `Unsubscribe link: ${ctx.fence.content(header.value)}\n\nOpen this URL to unsubscribe.` }] };
+    const from = headers.find((h: any) => h.name?.toLowerCase() === "from")?.value ?? "";
+    return { content: [{ type: "text", text: `Unsubscribe link for ${ctx.fence.header(from, "from")}: ${ctx.fence.content(header.value)}\n\nOpen this URL to unsubscribe.` }] };
   }, "unsubscribe"
 );
 

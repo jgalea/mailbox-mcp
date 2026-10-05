@@ -2,9 +2,11 @@ import { registerTool, lookupAccount, type ToolContext, type ToolResult } from "
 import { loadAttachments } from "../security/attachment-loader.js";
 import { checkOutgoing } from "../security/send-guard.js";
 import { stripFencing } from "../security/sanitize.js";
+import { isTainted } from "../security/taint.js";
 import { recordSend } from "../sendlog.js";
-import { ensureForwardPrefix } from "../providers/headers.js";
-import type { MailProvider } from "../providers/interface.js";
+import { queueSend, type PendingAttachment, type PendingReason, type PendingSend } from "../pending.js";
+import { ensureForwardPrefix, ensureReplyPrefix } from "../providers/headers.js";
+import type { Attachment, MailProvider } from "../providers/interface.js";
 
 const sendCounts = new Map<string, { count: number; resetAt: number }>();
 const MAX_SENDS_PER_MINUTE = 10;
@@ -43,10 +45,20 @@ export interface OutgoingArgs {
   draftOnly?: boolean;
 }
 
+export interface OutgoingGate {
+  provider: MailProvider;
+  draftsOnly: boolean;
+  /** Set when the send must go to the approval queue instead of the provider. */
+  queueReason?: PendingReason;
+  taintedBy?: string;
+}
+
 // Shared gate for every tool that sends. Returns the provider when the send
 // may go ahead, or the refusal to hand back. Order: read-only (already handled
-// by the registry), allowlist, confirmations, daily cap, per-minute limit.
-export async function gateOutgoing(args: Record<string, unknown>, ctx: ToolContext, out: OutgoingArgs): Promise<{ provider: MailProvider; draftsOnly: boolean } | ToolResult> {
+// by the registry), allowlist, confirmations, daily cap, then draftsOnly, the
+// untrusted-read lock, out-of-band approval, and last the per-minute limit.
+// Nothing the model passes in args reaches the lock or approval decisions.
+export async function gateOutgoing(args: Record<string, unknown>, ctx: ToolContext, out: OutgoingArgs): Promise<OutgoingGate | ToolResult> {
   const config = lookupAccount(ctx, out.account);
   const draftsOnly = !!config?.draftsOnly;
   const provider = await ctx.getProvider(out.account);
@@ -62,15 +74,42 @@ export async function gateOutgoing(args: Record<string, unknown>, ctx: ToolConte
     draftOnly: out.draftOnly || draftsOnly,
   });
   if (error) return refuse(error);
-  if (!out.draftOnly && !draftsOnly) {
-    const rateLimitError = checkSendLimit(out.account);
-    if (rateLimitError) return refuse(rateLimitError);
+  if (out.draftOnly || draftsOnly) return { provider, draftsOnly };
+
+  const taint = config?.untrustedReadLock ? isTainted(out.account) : undefined;
+  if (taint && config?.untrustedReadLock === "refuse") {
+    return refuse(`Refused: earlier in this session ${taint.tool} showed mail from ${taint.sender}, an address account "${out.account}" has never written to, and the account is configured untrustedReadLock: "refuse". Nothing can be sent from "${out.account}" for the rest of this session; restarting the MCP server clears it. No argument lifts this.`);
   }
+  if (taint) return { provider, draftsOnly, queueReason: "untrusted-read", taintedBy: `${taint.sender} via ${taint.tool}` };
+  if (config?.approval === "external") return { provider, draftsOnly, queueReason: "approval" };
+
+  const rateLimitError = checkSendLimit(out.account);
+  if (rateLimitError) return refuse(rateLimitError);
   return { provider, draftsOnly };
 }
 
 export function isRefusal(gate: { provider: MailProvider } | ToolResult): gate is ToolResult {
   return "content" in gate;
+}
+
+export function attachmentSpecs(paths: string[], loaded: Attachment[] | undefined): PendingAttachment[] {
+  return (loaded ?? []).map((a, i) => ({ path: paths[i], name: a.filename, size: a.data.length }));
+}
+
+// Writes the fully resolved send to the approval queue and tells the model
+// so. There is no tool that reads or approves the queue: the user does that
+// with `mailbox-mcp approve <id>` in a terminal, which is the point.
+export function queueOutgoing(gate: OutgoingGate, spec: Omit<PendingSend, "id" | "createdAt" | "reason" | "taintedBy">): ToolResult {
+  const pending = queueSend({ ...spec, reason: gate.queueReason ?? "approval", taintedBy: gate.taintedBy });
+  const why = gate.queueReason === "untrusted-read"
+    ? `This session read mail from ${gate.taintedBy}, an address account "${spec.account}" has never written to, so sends are held for the user's approval (untrustedReadLock).`
+    : `Account "${spec.account}" is configured approval: "external".`;
+  return {
+    content: [{
+      type: "text",
+      text: `Queued for approval, nothing was sent. Pending id: ${pending.id}. ${why} The user must review and approve it in their own terminal with \`mailbox-mcp approve ${pending.id}\` (\`mailbox-mcp pending\` lists the queue). This cannot be done from here; tell the user the id and stop.`,
+    }],
+  };
 }
 
 const attachmentsSchema = {
@@ -126,17 +165,26 @@ registerTool(
     const bcc = strings(args.bcc);
     const gate = await gateOutgoing(args, ctx, { account, recipients: [...to, ...cc, ...bcc] });
     if (isRefusal(gate)) return gate;
-    const attachments = loadAttachments(args.attachments as string[] | undefined);
+    const attachmentPaths = strings(args.attachments);
+    const attachments = loadAttachments(attachmentPaths);
     const subject = stripFencing(args.subject as string);
     const body = stripFencing(args.body as string);
+    const from = args.from as string | undefined;
+    const html = args.html as boolean | undefined;
     const options = {
-      from: args.from as string | undefined,
-      cc: cc.length ? cc : undefined, bcc: bcc.length ? bcc : undefined, html: args.html as boolean | undefined,
+      from,
+      cc: cc.length ? cc : undefined, bcc: bcc.length ? bcc : undefined, html,
       attachments,
     };
     if (gate.draftsOnly) {
       const id = await gate.provider.createDraft(to, subject, body, options);
       return { content: [{ type: "text", text: `Account "${account}" is configured draftsOnly, so nothing was sent. Draft created for the user to review and send from their mail client. Draft ID: ${id}` }] };
+    }
+    if (gate.queueReason) {
+      return queueOutgoing(gate, {
+        account, tool: "send_email", action: { kind: "send" },
+        from, to, cc, bcc, subject, body, html, attachments: attachmentSpecs(attachmentPaths, attachments),
+      });
     }
     const id = await gate.provider.sendMessage(to, subject, body, options);
     recordSend(account, "send_email", [...to, ...cc, ...bcc]);
@@ -175,22 +223,32 @@ registerTool(
     const derived = [original.replyTo || original.from, ...(args.reply_all ? [...original.to, ...original.cc] : [])].filter(Boolean);
     const gate = await gateOutgoing(args, ctx, { account, recipients: [...derived, ...cc, ...bcc], knownRecipients: derived });
     if (isRefusal(gate)) return gate;
-    const attachments = loadAttachments(args.attachments as string[] | undefined);
+    const attachmentPaths = strings(args.attachments);
+    const attachments = loadAttachments(attachmentPaths);
     const body = stripFencing(args.body as string);
+    const from = args.from as string | undefined;
+    const html = args.html as boolean | undefined;
     if (gate.draftsOnly) {
       const id = await gate.provider.createDraft(derived, stripFencing(original.subject), body, {
-        from: args.from as string | undefined,
+        from,
         cc: cc.length ? cc : undefined, bcc: bcc.length ? bcc : undefined,
-        html: args.html as boolean | undefined, inReplyTo: messageId, attachments,
+        html, inReplyTo: messageId, attachments,
       });
       return { content: [{ type: "text", text: `Account "${account}" is configured draftsOnly, so nothing was sent. Reply draft created for the user to review and send from their mail client. Draft ID: ${id}` }] };
     }
+    if (gate.queueReason) {
+      return queueOutgoing(gate, {
+        account, tool: "reply_email", action: { kind: "reply", messageId, replyAll: args.reply_all === true },
+        from, to: derived, cc, bcc, subject: ensureReplyPrefix(stripFencing(original.subject)), body, html,
+        attachments: attachmentSpecs(attachmentPaths, attachments),
+      });
+    }
     const id = await gate.provider.replyToMessage(messageId, body, {
-      from: args.from as string | undefined,
+      from,
       replyAll: args.reply_all as boolean | undefined,
       cc: cc.length ? cc : undefined,
       bcc: bcc.length ? bcc : undefined,
-      html: args.html as boolean | undefined,
+      html,
       attachments,
     });
     recordSend(account, "reply_email", [...derived, ...cc, ...bcc]);
@@ -221,25 +279,31 @@ registerTool(
   async (args, ctx) => {
     const account = args.account as string;
     const to = strings(args.to);
+    const messageId = args.message_id as string;
     const gate = await gateOutgoing(args, ctx, { account, recipients: to, isForward: true });
     if (isRefusal(gate)) return gate;
-    const attachments = loadAttachments(args.attachments as string[] | undefined);
+    const attachmentPaths = strings(args.attachments);
+    const attachments = loadAttachments(attachmentPaths);
     const message = args.message ? stripFencing(args.message as string) : undefined;
+    const from = args.from as string | undefined;
+    const html = args.html as boolean | undefined;
     if (gate.draftsOnly) {
-      const original = await gate.provider.readMessage(args.message_id as string);
+      const original = await gate.provider.readMessage(messageId);
       const fwdBody = message
         ? `${message}\n\n---------- Forwarded message ----------\n${original.body}`
         : `---------- Forwarded message ----------\n${original.body}`;
-      const id = await gate.provider.createDraft(to, ensureForwardPrefix(original.subject), fwdBody, {
-        from: args.from as string | undefined, html: args.html as boolean | undefined, attachments,
-      });
+      const id = await gate.provider.createDraft(to, ensureForwardPrefix(original.subject), fwdBody, { from, html, attachments });
       return { content: [{ type: "text", text: `Account "${account}" is configured draftsOnly, so nothing was sent. Forward draft created for the user to review and send from their mail client. Draft ID: ${id}` }] };
     }
-    const id = await gate.provider.forwardMessage(args.message_id as string, to, {
-      from: args.from as string | undefined,
-      message, html: args.html as boolean | undefined,
-      attachments,
-    });
+    if (gate.queueReason) {
+      const original = await gate.provider.readMessage(messageId);
+      return queueOutgoing(gate, {
+        account, tool: "forward_email", action: { kind: "forward", messageId },
+        from, to, cc: [], bcc: [], subject: ensureForwardPrefix(stripFencing(original.subject)), body: message ?? "", html,
+        attachments: attachmentSpecs(attachmentPaths, attachments),
+      });
+    }
+    const id = await gate.provider.forwardMessage(messageId, to, { from, message, html, attachments });
     recordSend(account, "forward_email", to);
     return { content: [{ type: "text", text: `Forwarded. Message ID: ${id}` }] };
   }

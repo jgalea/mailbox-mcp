@@ -1,4 +1,5 @@
 // src/providers/jmap.ts
+import { createHash } from "node:crypto";
 import { stripCRLF, validateNoSSRF } from "../security/validation.js";
 import { ensureReplyPrefix, ensureForwardPrefix, extractAddress } from "./headers.js";
 import type {
@@ -667,6 +668,20 @@ export class JmapProvider implements MailProvider {
     return ids.length > 0;
   }
 
+  async hasSentTo(address: string): Promise<boolean> {
+    const session = await this.ensureSession();
+    const sent = await this.findMailboxByRole("sent");
+    const responses = await this.apiCall([
+      ["Email/query", {
+        accountId: session.accountId,
+        filter: { inMailbox: sent.id, to: address },
+        limit: 1,
+      }, "0"],
+    ]);
+    const ids = responses.find((r: any) => r[0] === "Email/query")?.[1]?.ids ?? [];
+    return ids.length > 0;
+  }
+
   async getDraftRecipients(draftId: string): Promise<string[]> {
     const session = await this.ensureSession();
     const responses = await this.apiCall([
@@ -676,6 +691,18 @@ export class JmapProvider implements MailProvider {
     if (list.length === 0) throw new Error(`Draft ${draftId} not found`);
     const e = list[0];
     return [...formatJmapAddresses(e.to), ...formatJmapAddresses(e.cc), ...formatJmapAddresses(e.bcc)];
+  }
+
+  // Email blobs are immutable, so the blobId changes with any edit to the draft.
+  async draftFingerprint(draftId: string): Promise<string> {
+    const session = await this.ensureSession();
+    const responses = await this.apiCall([
+      ["Email/get", { accountId: session.accountId, ids: [draftId], properties: ["id", "blobId", "to", "cc", "bcc", "subject"] }, "0"],
+    ]);
+    const list = responses.find((r: any) => r[0] === "Email/get")?.[1]?.list ?? [];
+    if (list.length === 0) throw new Error(`Draft ${draftId} not found`);
+    const e = list[0];
+    return createHash("sha256").update(JSON.stringify([e.id, e.blobId, e.to, e.cc, e.bcc, e.subject])).digest("hex");
   }
 
   async sendDraft(draftId: string): Promise<string> {

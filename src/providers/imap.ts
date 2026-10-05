@@ -1,5 +1,6 @@
 import type { ImapFlow } from "imapflow";
 import type { Transporter } from "nodemailer";
+import { createHash } from "node:crypto";
 import { stripCRLF } from "../security/validation.js";
 import { buildRawMimeMessage } from "./mime.js";
 import { ensureReplyPrefix, ensureForwardPrefix } from "./headers.js";
@@ -627,6 +628,17 @@ export class ImapProvider implements MailProvider {
     }
   }
 
+  async hasSentTo(address: string): Promise<boolean> {
+    const sentFolder = await this.findSpecialFolder("\\Sent");
+    const lock = await this.imap.getMailboxLock(sentFolder);
+    try {
+      const uids = await this.imap.search({ to: address }, { uid: true });
+      return (uids || []).length > 0;
+    } finally {
+      lock.release();
+    }
+  }
+
   async getDraftRecipients(draftId: string): Promise<string[]> {
     const { folder, uid } = parseImapMessageId(draftId);
     const lock = await this.imap.getMailboxLock(folder);
@@ -634,6 +646,21 @@ export class ImapProvider implements MailProvider {
       const msg: any = await this.imap.fetchOne(uid, { envelope: true, uid: true }, { uid: true });
       if (!msg) throw new Error(`Draft ${draftId} not found`);
       return [...formatAddresses(msg.envelope?.to), ...formatAddresses(msg.envelope?.cc), ...formatAddresses(msg.envelope?.bcc)];
+    } finally {
+      lock.release();
+    }
+  }
+
+  // An edited IMAP draft is a new message with a new UID; size and envelope
+  // guard against a server that reuses one.
+  async draftFingerprint(draftId: string): Promise<string> {
+    const { folder, uid } = parseImapMessageId(draftId);
+    const lock = await this.imap.getMailboxLock(folder);
+    try {
+      const msg: any = await this.imap.fetchOne(uid, { envelope: true, size: true, uid: true }, { uid: true });
+      if (!msg) throw new Error(`Draft ${draftId} not found`);
+      const env = msg.envelope ?? {};
+      return createHash("sha256").update(JSON.stringify([folder, uid, msg.size, env.messageId, env.subject, env.to, env.cc, env.bcc])).digest("hex");
     } finally {
       lock.release();
     }

@@ -153,4 +153,8 @@ export interface MailProvider {
   hasCorrespondedWith?(address: string): Promise<boolean>;
   /** To/Cc/Bcc of an existing draft, so send_draft can run the recipient guards. */
   getDraftRecipients?(draftId: string): Promise<string[]>;
+  /** Whether the account has ever sent a message to `address` (Sent folder only, received mail does not count). Used by the untrusted-read lock. */
+  hasSentTo?(address: string): Promise<boolean>;
+  /** A string that changes whenever the draft's content or recipients change, so a queued send_draft stays bound to what was reviewed. */
+  draftFingerprint?(draftId: string): Promise<string>;
 }

@@ -1,6 +1,7 @@
-import { registerTool, sanitizeErrorMessage } from "./registry.js";
+import { registerTool, lookupAccount, sanitizeErrorMessage } from "./registry.js";
 import { redactTokens } from "../security/sanitize.js";
-import { gateOutgoing, isRefusal } from "./write.js";
+import { noteSenders } from "../security/taint.js";
+import { gateOutgoing, isRefusal, queueOutgoing } from "./write.js";
 import { recordSend } from "../sendlog.js";
 
 registerTool(
@@ -118,6 +119,16 @@ registerTool(
     if (gate.draftsOnly) {
       return { content: [{ type: "text", text: `Refused: account "${account}" is configured draftsOnly. The draft stays in Drafts for the user to send from their mail client.` }], isError: true };
     }
+    if (gate.queueReason) {
+      if (!provider.draftFingerprint) {
+        return { content: [{ type: "text", text: "Refused: this provider cannot fingerprint the draft, so a queued send could not be tied to what the user reviews. Use send_email with the draft's content instead." }], isError: true };
+      }
+      const fingerprint = await provider.draftFingerprint(draftId);
+      return queueOutgoing(gate, {
+        account, tool: "send_draft", action: { kind: "sendDraft", draftId, fingerprint },
+        to: recipients, cc: [], bcc: [], subject: "", body: "", attachments: [],
+      });
+    }
     const id = await provider.sendDraft(draftId);
     recordSend(account, "send_draft", recipients);
     return { content: [{ type: "text", text: `Draft sent. Message ID: ${id}` }] };
@@ -212,6 +223,7 @@ registerTool(
         sections.push(`## ${alias}\n\n(no results)`);
         continue;
       }
+      await noteSenders(alias, lookupAccount(ctx, alias), () => ctx.getProvider(alias), "multi_account_search", results.map((m) => m.from));
       const lines = results.map((m) =>
         `- **${m.id}** | ${ctx.fence.header(m.from, "from")} | ${ctx.fence.content(m.subject, "subject")} (${m.date})`
       );

@@ -20,6 +20,8 @@ registerTool(
       if (config.draftsOnly) flags.push("drafts-only");
       if (config.allowedRecipients?.length) flags.push(`allowlist: ${config.allowedRecipients.join(", ")}`);
       if (config.dailySendLimit !== undefined) flags.push(`daily send limit: ${config.dailySendLimit}`);
+      if (config.approval) flags.push(`approval: ${config.approval}`);
+      if (config.untrustedReadLock) flags.push(`untrusted-read lock: ${config.untrustedReadLock}`);
       return `- **${alias}** (${config.provider}): ${config.email}${flags.length ? ` [${flags.join("; ")}]` : ""}`;
     });
     return { content: [{ type: "text", text: lines.join("\n") }] };
@@ -47,6 +49,8 @@ registerTool(
         drafts_only: { type: "boolean", description: "Send tools create drafts instead of sending. Can only be turned off by editing accounts.json." },
         allowed_recipients: { type: "array", items: { type: "string" }, description: "Recipient allowlist: exact addresses and/or @domain patterns. Sends to anyone else are refused. Can only be changed by editing accounts.json." },
         daily_send_limit: { type: "number", description: "Maximum messages this account may send per rolling 24 hours (default 100)." },
+        approval: { type: "string", enum: ["external"], description: "Hold every send in a queue on disk; nothing leaves until the user runs `mailbox-mcp approve <id>` in a terminal. Can only be turned off by editing accounts.json." },
+        untrusted_read_lock: { type: "string", enum: ["approval", "refuse"], description: "Once this session has shown mail from an address the account never wrote to, route sends through the approval queue or refuse them until the server restarts. Can only be turned off by editing accounts.json." },
       },
       required: ["alias", "provider", "email"],
     },
@@ -60,6 +64,8 @@ registerTool(
     if (args.drafts_only === true) guards.draftsOnly = true;
     if (Array.isArray(args.allowed_recipients)) guards.allowedRecipients = args.allowed_recipients as string[];
     if (typeof args.daily_send_limit === "number") guards.dailySendLimit = args.daily_send_limit;
+    if (args.approval === "external") guards.approval = "external";
+    if (args.untrusted_read_lock === "approval" || args.untrusted_read_lock === "refuse") guards.untrustedReadLock = args.untrusted_read_lock;
 
     if (provider === "gmail") {
       ctx.accountManager.addAccount(alias, { provider: "gmail", email, ...guards });

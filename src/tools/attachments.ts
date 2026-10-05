@@ -1,6 +1,7 @@
 import { join, basename } from "node:path";
 import { writeFileSync, mkdirSync, existsSync, chmodSync } from "node:fs";
-import { registerTool } from "./registry.js";
+import { registerTool, lookupAccount } from "./registry.js";
+import { markTainted } from "../security/taint.js";
 import { validateAttachmentPath } from "../security/validation.js";
 import { DEFAULT_DOWNLOAD_DIR, validateSavePath } from "../security/save-path.js";
 
@@ -22,6 +23,8 @@ registerTool(
   async (args, ctx) => {
     const provider = await ctx.getProvider(args.account as string);
     const result = await provider.downloadAttachment(args.message_id as string, args.attachment_id as string);
+    // Attachment content lands on disk outside the fence, so the lock treats it as untrusted content.
+    markTainted(args.account as string, lookupAccount(ctx, args.account as string), "download_attachment", `attachment from message ${args.message_id}`);
 
     validateAttachmentPath(result.filename);
     const safeName = basename(result.filename);

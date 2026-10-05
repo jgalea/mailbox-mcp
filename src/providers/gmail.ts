@@ -1,4 +1,5 @@
 import { Readable } from "node:stream";
+import { createHash } from "node:crypto";
 import { buildRawMimeMessage } from "./mime.js";
 import { ensureReplyPrefix, ensureForwardPrefix, splitAddressList, extractAddress } from "./headers.js";
 
@@ -501,10 +502,24 @@ export class GmailProvider implements MailProvider {
     return (res.data.messages ?? []).length > 0;
   }
 
+  async hasSentTo(address: string): Promise<boolean> {
+    const res = await this.gmail.users.messages.list({ userId: "me", q: `in:sent to:${address}`, maxResults: 1 });
+    return (res.data.messages ?? []).length > 0;
+  }
+
   async getDraftRecipients(draftId: string): Promise<string[]> {
     const full = await this.gmail.users.drafts.get({ userId: "me", id: draftId, format: "metadata" });
     const headers = full.data.message?.payload?.headers ?? [];
     return ["To", "Cc", "Bcc"].flatMap((h) => splitAddressList(getHeader(headers, h)));
+  }
+
+  // drafts.update replaces the underlying message, so its id, headers and
+  // snippet together change whenever the draft does.
+  async draftFingerprint(draftId: string): Promise<string> {
+    const full = await this.gmail.users.drafts.get({ userId: "me", id: draftId, format: "metadata" });
+    const message = full.data.message ?? {};
+    const headers = (message.payload?.headers ?? []).map((h: any) => [h.name, h.value]);
+    return createHash("sha256").update(JSON.stringify([message.id, message.snippet, headers])).digest("hex");
   }
 
   async sendDraft(draftId: string): Promise<string> {

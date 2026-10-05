@@ -504,3 +504,40 @@ describe("JmapProvider from address", () => {
     expect(calledIdentityGet).toBe(false);
   });
 });
+
+describe("JmapProvider untrusted-read lock support", () => {
+  it("hasSentTo queries the mailbox with role sent, filtered by recipient", async () => {
+    vi.clearAllMocks();
+    const provider = new JmapProvider("fastmail.com", "test@fastmail.com", "testuser", "testpass");
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(mockApiResponse([
+        ["Mailbox/query", { ids: ["mbox-sent"] }, "0"],
+        ["Mailbox/get", { list: [{ id: "mbox-sent", name: "Sent", role: "sent" }] }, "1"],
+      ]))
+      .mockResolvedValueOnce(mockApiResponse([["Email/query", { ids: ["e1"] }, "0"]]));
+    expect(await provider.hasSentTo("friend@example.net")).toBe(true);
+    const query = JSON.parse(mockFetch.mock.calls[2][1].body).methodCalls[0];
+    expect(query[0]).toBe("Email/query");
+    expect(query[1].filter).toEqual({ inMailbox: "mbox-sent", to: "friend@example.net" });
+    expect(query[1].limit).toBe(1);
+  });
+
+  it("draftFingerprint changes with the blobId or recipients", async () => {
+    vi.clearAllMocks();
+    const provider = new JmapProvider("fastmail.com", "test@fastmail.com", "testuser", "testpass");
+    const email = (blobId: string, to: string) => mockApiResponse([["Email/get", { list: [{ id: "d1", blobId, to: [{ email: to }], cc: null, bcc: null, subject: "Hi" }] }, "0"]]);
+    mockFetch
+      .mockResolvedValueOnce(mockSessionResponse())
+      .mockResolvedValueOnce(email("B1", "a@example.net"))
+      .mockResolvedValueOnce(email("B1", "a@example.net"))
+      .mockResolvedValueOnce(email("B2", "a@example.net"))
+      .mockResolvedValueOnce(email("B1", "b@example.net"));
+    const base = await provider.draftFingerprint("d1");
+    expect(await provider.draftFingerprint("d1")).toBe(base);
+    expect(await provider.draftFingerprint("d1")).not.toBe(base);
+    expect(await provider.draftFingerprint("d1")).not.toBe(base);
+    const props = JSON.parse(mockFetch.mock.calls[1][1].body).methodCalls[0][1].properties;
+    expect(props).toContain("blobId");
+  });
+});
