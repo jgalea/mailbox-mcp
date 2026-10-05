@@ -1,3 +1,11 @@
+/** What the provider can vouch for about a message's origin. Backs the untrusted-read lock. */
+export interface SenderAuth {
+  /** Authentication-Results header values, topmost (the receiving server's) first. */
+  authenticationResults: string[];
+  /** True when the account itself sent the message (Sent folder or SENT label). */
+  sent: boolean;
+}
+
 export interface EmailSummary {
   id: string;
   threadId?: string;
@@ -8,6 +16,8 @@ export interface EmailSummary {
   date: string;
   labels: string[];
   hasAttachments: boolean;
+  /** Absent when the provider could not say, which the lock treats as unauthenticated. */
+  auth?: SenderAuth;
 }
 
 export interface EmailMessage extends EmailSummary {

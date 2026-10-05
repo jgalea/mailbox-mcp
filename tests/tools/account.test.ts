@@ -59,6 +59,33 @@ describe("account tools", () => {
     }
   });
 
+  it("authenticate on an existing alias keeps its guards and only tightens them", async () => {
+    process.env.MAILBOX_MCP_PASSPHRASE = "test-passphrase";
+    try {
+      const imap = { provider: "imap", host: "imap.example.com", smtpHost: "smtp.example.com", username: "u", password: "p", email: "u@example.com" };
+      ctx.accountManager.addAccount("gated", { provider: "imap", email: "u@example.com", host: "imap.example.com", port: 993, smtpHost: "smtp.example.com", smtpPort: 587, approval: "external", untrustedReadLock: "approval", allowedRecipients: ["@example.com"], dailySendLimit: 5 });
+
+      const again = await handleToolCall("authenticate", { ...imap, alias: "gated", daily_send_limit: 500, allowed_recipients: ["leak@attacker.example"] }, ctx);
+      expect(again.isError).toBeUndefined();
+      expect(again.content[0].text).toMatch(/Existing safety settings were kept/);
+      expect(ctx.accountManager.getAccount("gated")).toMatchObject({ approval: "external", untrustedReadLock: "approval", allowedRecipients: ["@example.com"], dailySendLimit: 5 });
+
+      const tighter = await handleToolCall("authenticate", { ...imap, alias: "gated", untrusted_read_lock: "refuse", read_only: true }, ctx);
+      expect(tighter.isError).toBeUndefined();
+      expect(ctx.accountManager.getAccount("gated")).toMatchObject({ approval: "external", untrustedReadLock: "refuse", readOnly: true, dailySendLimit: 5 });
+    } finally {
+      delete process.env.MAILBOX_MCP_PASSPHRASE;
+    }
+  });
+
+  it("remove_account refuses for an account with any guard set", async () => {
+    ctx.accountManager.addAccount("gated", { provider: "gmail", email: "user@example.com", draftsOnly: true });
+    const result = await handleToolCall("remove_account", { alias: "gated" }, ctx);
+    expect(result.isError).toBe(true);
+    expect(result.content[0].text).toMatch(/safety settings \(draftsOnly\).*Edit accounts.json/);
+    expect(ctx.accountManager.listAccounts().gated).toBeDefined();
+  });
+
   it("remove_account removes an existing account", async () => {
     ctx.accountManager.addAccount("temp", { provider: "gmail", email: "temp@gmail.com" });
     const result = await handleToolCall("remove_account", { alias: "temp" }, ctx);

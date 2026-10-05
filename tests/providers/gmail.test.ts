@@ -339,13 +339,46 @@ describe("GmailProvider label resolution", () => {
 });
 
 describe("GmailProvider untrusted-read lock support", () => {
-  it("hasSentTo searches the Sent folder only, one result at most", async () => {
+  it("hasSentTo searches Sent, then requires an exact address on To/Cc/Bcc", async () => {
     const mockGmail = createMockGmail();
     const provider = new GmailProvider(mockGmail as any);
-    mockGmail.users.messages.list.mockResolvedValueOnce({ data: { messages: [{ id: "m1" }] } }).mockResolvedValueOnce({ data: {} });
+    const meta = (name: string, value: string) => ({ data: { payload: { headers: [{ name, value }] } } });
+    mockGmail.users.messages.list.mockResolvedValue({ data: { messages: [{ id: "m1" }, { id: "m2" }] } });
+    mockGmail.users.messages.get
+      .mockResolvedValueOnce(meta("To", "xfriend@example.net"))
+      .mockResolvedValueOnce(meta("Cc", "Other <o@example.org>, Friend <FRIEND@example.net>"));
     expect(await provider.hasSentTo("friend@example.net")).toBe(true);
-    expect(mockGmail.users.messages.list).toHaveBeenCalledWith({ userId: "me", q: "in:sent to:friend@example.net", maxResults: 1 });
-    expect(await provider.hasSentTo("stranger@example.net")).toBe(false);
+    expect(mockGmail.users.messages.list).toHaveBeenCalledWith({ userId: "me", q: "in:sent to:friend@example.net", maxResults: 50 });
+    expect(mockGmail.users.messages.get).toHaveBeenCalledWith(expect.objectContaining({ id: "m1", format: "metadata", metadataHeaders: ["To", "Cc", "Bcc"] }));
+
+    mockGmail.users.messages.get.mockReset();
+    mockGmail.users.messages.get.mockResolvedValueOnce(meta("To", "xfriend@example.net")).mockResolvedValueOnce(meta("To", "friend@example.net.attacker.example"));
+    expect(await provider.hasSentTo("friend@example.net")).toBe(false);
+
+    mockGmail.users.messages.list.mockResolvedValue({ data: {} });
+    expect(await provider.hasSentTo("nobody@example.net")).toBe(false);
+  });
+
+  it("carries Authentication-Results and the SENT label as evidence on every message", async () => {
+    const mockGmail = createMockGmail();
+    const provider = new GmailProvider(mockGmail as any);
+    const data = {
+      id: "m1", threadId: "t1", labelIds: ["SENT"], snippet: "s",
+      payload: { headers: [
+        { name: "Authentication-Results", value: "mx.google.com; dmarc=pass header.from=example.net" },
+        { name: "From", value: "a@example.net" },
+        { name: "Authentication-Results", value: "mx.example.net; dmarc=none" },
+      ], parts: [] },
+    };
+    mockGmail.users.messages.list.mockResolvedValue({ data: { messages: [{ id: "m1" }] } });
+    mockGmail.users.messages.get.mockResolvedValue({ data });
+    const [summary] = await provider.searchMessages("x");
+    expect(summary.auth).toEqual({ authenticationResults: ["mx.google.com; dmarc=pass header.from=example.net", "mx.example.net; dmarc=none"], sent: true });
+    expect(mockGmail.users.messages.get).toHaveBeenCalledWith(expect.objectContaining({ metadataHeaders: expect.arrayContaining(["Authentication-Results"]) }));
+    const full = await provider.readMessage("m1");
+    expect(full.auth?.sent).toBe(true);
+    mockGmail.users.messages.get.mockResolvedValue({ data: { ...data, labelIds: ["INBOX"] } });
+    expect((await provider.readMessage("m1")).auth?.sent).toBe(false);
   });
 
   it("draftFingerprint changes when the draft's message, headers or snippet change", async () => {

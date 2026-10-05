@@ -224,8 +224,8 @@ export async function handleToolCall(
 
   // Tools without an account argument that render senders (multi_account_search)
   // call noteSenders per account themselves.
-  if (alias && ctx.fence.senders.length > 0) {
-    await noteSenders(alias, lookupAccount(ctx, alias), () => ctx.getProvider(alias), name, ctx.fence.senders);
+  if (alias && ctx.fence.evidence.length > 0) {
+    await noteSenders(alias, lookupAccount(ctx, alias), () => ctx.getProvider(alias), name, ctx.fence.evidence);
   }
 
   const warnings = ctx.fence.warnings();

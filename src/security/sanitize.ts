@@ -1,5 +1,6 @@
 import { randomBytes } from "node:crypto";
 import { htmlToVisibleText } from "./html-text.js";
+import type { SenderAuth } from "../providers/interface.js";
 
 // Zero-width and bidirectional control characters. Invisible in a mail client,
 // but they split or reorder words for the model and are a common way to hide
@@ -60,8 +61,8 @@ export class ResponseFence {
   readonly nonce: string;
   hiddenTextChars = 0;
   invisibleChars = 0;
-  /** Every From value rendered in this response, so the registry can apply the untrusted-read lock. */
-  readonly senders: string[] = [];
+  /** Every message rendered in this response, with whatever the provider could vouch for, so the registry can apply the untrusted-read lock. */
+  readonly evidence: Array<{ from: string; auth?: SenderAuth }> = [];
 
   constructor(nonce: string = newFenceNonce()) {
     this.nonce = nonce;
@@ -86,8 +87,14 @@ export class ResponseFence {
   }
 
   header(value: string, field: string): string {
-    if (field === "from") this.senders.push(value);
+    if (field === "from") this.evidence.push({ from: value });
     return this.wrap(`UNTRUSTED_${field.toUpperCase()}`, value);
+  }
+
+  /** Renders a message's From header and records the provider's authentication evidence alongside it. */
+  sender(message: { from: string; auth?: SenderAuth }): string {
+    this.evidence.push({ from: message.from, auth: message.auth });
+    return this.wrap("UNTRUSTED_FROM", message.from);
   }
 
   warnings(): string[] {

@@ -178,7 +178,7 @@ registerTool(
     );
     if (results.length === 0) return { content: [{ type: "text", text: "No messages since that timestamp." }] };
     const lines = results.map((m) =>
-      `- **${m.id}** | ${ctx.fence.header(m.from, "from")} | ${ctx.fence.content(m.subject, "subject")} (${m.date})`
+      `- **${m.id}** | ${ctx.fence.sender(m)} | ${ctx.fence.content(m.subject, "subject")} (${m.date})`
     );
     return { content: [{ type: "text", text: lines.join("\n") }] };
   }
@@ -223,9 +223,9 @@ registerTool(
         sections.push(`## ${alias}\n\n(no results)`);
         continue;
       }
-      await noteSenders(alias, lookupAccount(ctx, alias), () => ctx.getProvider(alias), "multi_account_search", results.map((m) => m.from));
+      await noteSenders(alias, lookupAccount(ctx, alias), () => ctx.getProvider(alias), "multi_account_search", results.map((m) => ({ from: m.from, auth: m.auth })));
       const lines = results.map((m) =>
-        `- **${m.id}** | ${ctx.fence.header(m.from, "from")} | ${ctx.fence.content(m.subject, "subject")} (${m.date})`
+        `- **${m.id}** | ${ctx.fence.sender(m)} | ${ctx.fence.content(m.subject, "subject")} (${m.date})`
       );
       sections.push(`## ${alias}\n\n${lines.join("\n")}`);
     }

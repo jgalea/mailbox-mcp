@@ -42,7 +42,7 @@ The three options below enforce limits outside the model instead of asking it to
 
 **Tool profiles** (`MAILBOX_MCP_PROFILE`). `read` exposes only read-only tools; `draft` exposes everything except the tools that can make mail leave the account. Hidden tools are absent from the tool list and refuse if called anyway. See [Choosing which tools load](#choosing-which-tools-load).
 
-**Lock after untrusted reads** (`"untrustedReadLock": "approval" | "refuse"` per account). As soon as a tool shows the model mail from a sender the account has never written to (not in the local send log, not in the provider's Sent folder; having received mail from them does not count), or exports or downloads message content to disk, the account is marked for the rest of the server process. `approval` then routes every send from it through the pending queue even if `approval` isn't set; `refuse` refuses sends until the server restarts. A From header that could be parsed two ways (several addresses, a display name with its own angle brackets or `@`, invisible characters, no address at all) counts as untrusted. No argument the model can pass lifts it.
+**Lock after untrusted reads** (`"untrustedReadLock": "approval" | "refuse"` per account). As soon as a tool shows the model a message it cannot vouch for, or exports or downloads message content to disk, the account is marked for the rest of the server process. `approval` then routes every send from it through the pending queue even if `approval` isn't set; `refuse` refuses sends until the server restarts. No argument the model can pass lifts it. The lock leans strict on purpose: a message is vouched for only when the account itself sent it (it sits in Sent), or when the receiving server's DMARC check passed for the From domain AND the account has written to that exact address before. A From header on its own counts for nothing, since forging one costs nothing, so most third-party mail will trigger the lock. See [How the lock decides](#how-the-lock-decides).
 
 None of this makes prompt injection impossible. A model can still be talked into a reply you didn't want, and a text/plain part can say something different from the HTML part a human sees. Keep a human approving sends. A reasonable setup: `readOnly: true` or `MAILBOX_MCP_PROFILE=read` on accounts you only need to search, `approval: "external"` or an allowlist on any account an agent sends from unattended, `untrustedReadLock` on anything that triages an inbox, and the default confirmations everywhere else.
 
@@ -199,7 +199,7 @@ JMAP auto-discovers the API endpoint via `.well-known/jmap`. Credentials are enc
 
 ## Account safety settings
 
-Each entry in `~/.mailbox-mcp/accounts.json` can carry six optional fields:
+Each entry in `~/.mailbox-mcp/accounts.json` can carry seven optional fields:
 
 ```json
 {
@@ -225,7 +225,8 @@ Each entry in `~/.mailbox-mcp/accounts.json` can carry six optional fields:
 | `allowedRecipients` | Exact addresses and `@domain` patterns (a domain pattern matches that domain only, not subdomains). Sends, replies, forwards and drafts to any other address are refused. |
 | `dailySendLimit` | Sends allowed per rolling 24 hours (default 100; `0` blocks all sending). Counted from `sends.jsonl`, so restarts don't reset it. |
 | `approval` | `"external"`: `send_email`, `reply_email`, `forward_email`, `send_draft` and `send_template` run every guard, then queue the message under `~/.mailbox-mcp/pending/` instead of sending. Only `mailbox-mcp approve <id>` in a terminal sends it. |
-| `untrustedReadLock` | `"approval"` or `"refuse"`. Once any tool has shown this session mail from a sender the account never wrote to, or exported message content to disk, sends from the account are queued for approval or refused until the server restarts. In-memory only; nothing the model calls can clear it. |
+| `untrustedReadLock` | `"approval"` or `"refuse"`. Once any tool has shown this session a message that is not DMARC-authenticated from an address the account has written to (or in Sent), or exported message content to disk, sends from the account are queued for approval or refused until the server restarts. In-memory only; nothing the model calls can clear it. |
+| `authservId` | The `authserv-id` your own mail server writes into the topmost `Authentication-Results` header (Gmail: `mx.google.com`, set automatically). IMAP and JMAP accounts need it before the lock can trust any received mail; without it every third-party message taints. Only settable in `accounts.json`. |
 
 The same settings can be passed to `authenticate` as `read_only`, `drafts_only`, `allowed_recipients`, `daily_send_limit`, `approval` and `untrusted_read_lock` when the account is created, and `list_accounts` shows them. There is deliberately no tool to change them afterwards: edit the file and restart the server. Malformed entries make the server refuse to start rather than run unguarded.
 
@@ -253,6 +254,12 @@ If the agent runs inside Claude Code, add the approve command to the deny list i
 ```
 
 How "new recipient" is decided: an address is known if this server has sent to it before from that account (the `sends.jsonl` log), if it is the account's own address, or if one provider search (`from:addr OR to:addr`, limited to one result; INBOX only on IMAP) finds a message. Anything else needs `confirm_new_recipient: true`. Reply targets taken from the message being replied to are trusted, since you already received mail from them.
+
+`authenticate` on an alias that already exists re-authenticates it in place and merges the safety settings so they can only stay or tighten: flags can be switched on but not off, `untrustedReadLock` can go from `approval` to `refuse` but not back, `dailySendLimit` can only drop, and `allowedRecipients` can only lose entries. `remove_account` refuses for any account that has a safety setting, since removing and re-adding it would drop them; edit `accounts.json` instead.
+
+### How the lock decides
+
+`untrustedReadLock` treats a message as trusted in exactly two cases. Either the account sent it (Gmail `SENT` label, the IMAP `\Sent` folder, the JMAP `sent` mailbox), or all of the following hold: the From header reduces to exactly one plain address (several addresses, a display name with its own angle brackets or `@`, invisible characters or no address at all fail this); the topmost `Authentication-Results` header was written by the account's own server (`authserv-id` equals `authservId`, `mx.google.com` for Gmail), contains exactly one `dmarc=` result, that result is `pass`, and its `header.from` equals the From domain; and the account has written to that exact address before, per `sends.jsonl` or an exact To/Cc/Bcc match among the newest 50 matching messages in Sent (the raw IMAP and JMAP recipient searches are substring matches, so hits are re-checked against the real addresses). Everything else taints, including the account's own address when the message is not in Sent (a forged From), a known sender whose mail did not pass DMARC, mail from a server you have not named in `authservId`, and any error while deciding. Exports and downloads taint unconditionally because the content leaves the fence.
 
 ## Choosing which tools load
 

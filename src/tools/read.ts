@@ -24,7 +24,7 @@ registerTool(
     );
     if (results.length === 0) return { content: [{ type: "text", text: "No messages found." }] };
     const f = ctx.fence;
-    const lines = results.map((m) => `**${m.id}** | ${f.header(m.from, "from")} | ${f.content(m.subject, "subject")}\n  ${f.content(m.snippet)} (${f.header(m.date, "date")})`);
+    const lines = results.map((m) => `**${m.id}** | ${f.sender(m)} | ${f.content(m.subject, "subject")}\n  ${f.content(m.snippet)} (${f.header(m.date, "date")})`);
     return { content: [{ type: "text", text: lines.join("\n\n") }] };
   }
 );
@@ -47,7 +47,7 @@ registerTool(
     const msg = await provider.readMessage(args.message_id as string);
     const f = ctx.fence;
     const text = [
-      `**From:** ${f.header(msg.from, "from")}`, `**To:** ${f.header(msg.to.join(", "), "to")}`,
+      `**From:** ${f.sender(msg)}`, `**To:** ${f.header(msg.to.join(", "), "to")}`,
       msg.cc.length ? `**Cc:** ${f.header(msg.cc.join(", "), "cc")}` : "",
       `**Subject:** ${f.content(msg.subject, "subject")}`, `**Date:** ${f.header(msg.date, "date")}`,
       msg.attachments.length ? `**Attachments:** ${msg.attachments.map((a) => `${f.header(a.filename, "filename")} (${a.id})`).join(", ")}` : "",
@@ -76,7 +76,7 @@ registerTool(
     const f = ctx.fence;
     const text = [
       `**Thread:** ${thread.id} — ${f.content(thread.subject, "subject")}`, `**Messages:** ${thread.messages.length}`, "",
-      ...thread.messages.map((m, i) => `--- Message ${i + 1} ---\n**From:** ${f.header(m.from, "from")}\n**Date:** ${f.header(m.date, "date")}\n\n${f.body(m.body, m.bodyIsHtml)}`),
+      ...thread.messages.map((m, i) => `--- Message ${i + 1} ---\n**From:** ${f.sender(m)}\n**Date:** ${f.header(m.date, "date")}\n\n${f.body(m.body, m.bodyIsHtml)}`),
     ].join("\n");
     return { content: [{ type: "text", text }] };
   },
@@ -97,7 +97,7 @@ registerTool(
     const provider = await ctx.getProvider(args.account as string);
     const summary = await provider.inboxSummary();
     const f = ctx.fence;
-    const recentLines = summary.recent.map((m) => `- ${f.header(m.from, "from")}: ${f.content(m.subject, "subject")} (${f.header(m.date, "date")})`);
+    const recentLines = summary.recent.map((m) => `- ${f.sender(m)}: ${f.content(m.subject, "subject")} (${f.header(m.date, "date")})`);
     const text = [`**Total:** ${summary.total}`, `**Unread:** ${summary.unread}`, "", "**Recent:**", ...recentLines].join("\n");
     return { content: [{ type: "text", text }] };
   }

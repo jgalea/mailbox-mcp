@@ -5,12 +5,22 @@ import { gateOutgoing, isRefusal, queueOutgoing } from "./write.js";
 import { recordSend } from "../sendlog.js";
 import { buildEmailBuffer, shouldUseMediaUpload, type GmailEncodeOptions, type GmailProvider } from "../providers/gmail.js";
 import { loadAttachments } from "../security/attachment-loader.js";
+import type { SenderAuth } from "../providers/interface.js";
 
 function getGmailApi(provider: any) {
   if (provider.type !== "gmail" || !provider.gmailApi) {
     throw new Error("This tool requires a Gmail account");
   }
   return provider.gmailApi;
+}
+
+function senderFromMetadata(data: any): { from: string; auth: SenderAuth } {
+  const headers: Array<{ name?: string; value?: string }> = data?.payload?.headers ?? [];
+  const named = (name: string) => headers.filter((h) => h.name?.toLowerCase() === name).map((h) => h.value ?? "");
+  return {
+    from: named("from")[0] ?? "",
+    auth: { authenticationResults: named("authentication-results"), sent: (data?.labelIds ?? []).includes("SENT") },
+  };
 }
 
 // --- Filters ---
@@ -234,12 +244,11 @@ registerTool(
     inputSchema: { type: "object" as const, properties: { account: { type: "string", description: "Account alias" }, message_id: { type: "string", description: "Message ID from the mailing list" } }, required: ["account", "message_id"] } },
   async (args, ctx) => {
     const gmail = getGmailApi(await ctx.getProvider(args.account as string));
-    const res = await gmail.users.messages.get({ userId: "me", id: args.message_id as string, format: "metadata", metadataHeaders: ["List-Unsubscribe", "From"] });
+    const res = await gmail.users.messages.get({ userId: "me", id: args.message_id as string, format: "metadata", metadataHeaders: ["List-Unsubscribe", "From", "Authentication-Results"] });
     const headers = res.data.payload?.headers ?? [];
     const header = headers.find((h: any) => h.name?.toLowerCase() === "list-unsubscribe");
     if (!header?.value) return { content: [{ type: "text", text: "No List-Unsubscribe header found on this message." }], isError: true };
-    const from = headers.find((h: any) => h.name?.toLowerCase() === "from")?.value ?? "";
-    return { content: [{ type: "text", text: `Unsubscribe link for ${ctx.fence.header(from, "from")}: ${ctx.fence.content(header.value)}\n\nOpen this URL to unsubscribe.` }] };
+    return { content: [{ type: "text", text: `Unsubscribe link for ${ctx.fence.sender(senderFromMetadata(res.data))}: ${ctx.fence.content(header.value)}\n\nOpen this URL to unsubscribe.` }] };
   }, "unsubscribe"
 );
 
@@ -250,11 +259,11 @@ registerTool(
     const gmail = getGmailApi(await ctx.getProvider(args.account as string));
     const results: string[] = [];
     for (const msgId of args.message_ids as string[]) {
-      const res = await gmail.users.messages.get({ userId: "me", id: msgId, format: "metadata", metadataHeaders: ["List-Unsubscribe", "From"] });
+      const res = await gmail.users.messages.get({ userId: "me", id: msgId, format: "metadata", metadataHeaders: ["List-Unsubscribe", "From", "Authentication-Results"] });
       const headers = res.data.payload?.headers ?? [];
-      const from = headers.find((h: any) => h.name === "From")?.value ?? "unknown";
       const unsub = headers.find((h: any) => h.name?.toLowerCase() === "list-unsubscribe")?.value;
-      results.push(unsub ? `- ${ctx.fence.header(from, "from")}: ${ctx.fence.content(unsub)}` : `- ${ctx.fence.header(from, "from")}: no unsubscribe link`);
+      const sender = ctx.fence.sender(senderFromMetadata(res.data));
+      results.push(unsub ? `- ${sender}: ${ctx.fence.content(unsub)}` : `- ${sender}: no unsubscribe link`);
     }
     return { content: [{ type: "text", text: results.join("\n") }] };
   }, "unsubscribe"

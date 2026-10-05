@@ -578,15 +578,41 @@ describe("ImapProvider", () => {
 });
 
 describe("ImapProvider untrusted-read lock support", () => {
-  it("hasSentTo searches the discovered Sent folder by recipient, not INBOX", async () => {
+  it("hasSentTo narrows with SEARCH in the Sent folder, then requires an exact envelope address", async () => {
     const mockImap = createMockImapClient();
     const provider = new ImapProvider(mockImap as any, createMockTransport() as any, "test@example.com");
     mockImap.list.mockResolvedValue([{ path: "INBOX", specialUse: "\\Inbox" }, { path: "Sent Items", specialUse: "\\Sent" }]);
-    mockImap.search.mockResolvedValueOnce([42]).mockResolvedValueOnce([]);
+    mockImap.search.mockResolvedValue([1, 2]);
+    mockImap.fetchAll.mockResolvedValueOnce([
+      { uid: 1, envelope: { to: [{ address: "xfriend@example.net" }] } },
+      { uid: 2, envelope: { to: [{ address: "o@example.org" }], cc: [{ address: "FRIEND@example.net" }] } },
+    ]);
     expect(await provider.hasSentTo("friend@example.net")).toBe(true);
     expect(mockImap.getMailboxLock).toHaveBeenCalledWith("Sent Items");
-    expect(mockImap.search).toHaveBeenCalledWith({ to: "friend@example.net" }, { uid: true });
-    expect(await provider.hasSentTo("stranger@example.net")).toBe(false);
+    expect(mockImap.search).toHaveBeenCalledWith({ or: [{ to: "friend@example.net" }, { cc: "friend@example.net" }, { bcc: "friend@example.net" }] }, { uid: true });
+    expect(mockImap.fetchAll).toHaveBeenCalledWith([1, 2], expect.objectContaining({ envelope: true }), { uid: true });
+
+    mockImap.fetchAll.mockResolvedValueOnce([{ uid: 1, envelope: { to: [{ address: "xfriend@example.net" }] } }]);
+    expect(await provider.hasSentTo("friend@example.net")).toBe(false);
+    mockImap.search.mockResolvedValue([]);
+    expect(await provider.hasSentTo("nobody@example.net")).toBe(false);
+  });
+
+  it("carries unfolded Authentication-Results headers and the Sent-folder flag as evidence", async () => {
+    const mockImap = createMockImapClient();
+    const provider = new ImapProvider(mockImap as any, createMockTransport() as any, "test@example.com");
+    mockImap.list.mockResolvedValue([{ path: "INBOX", specialUse: "\\Inbox" }, { path: "Sent", specialUse: "\\Sent" }]);
+    mockImap.search.mockResolvedValue([5]);
+    const headers = Buffer.from("Authentication-Results: mx.example.com;\r\n\tdmarc=pass header.from=a.example\r\nAuthentication-Results: mx.other.example; dmarc=none\r\nSubject: x\r\n");
+    mockImap.fetchAll.mockResolvedValue([{ uid: 5, envelope: { from: [{ address: "a@a.example" }], subject: "x" }, headers }]);
+    const [inbox] = await provider.searchMessages("x", 20, "INBOX");
+    expect(inbox.auth).toEqual({ authenticationResults: ["mx.example.com; dmarc=pass header.from=a.example", "mx.other.example; dmarc=none"], sent: false });
+    expect(mockImap.fetchAll).toHaveBeenCalledWith([5], expect.objectContaining({ headers: ["authentication-results"] }), { uid: true });
+    const [sent] = await provider.searchMessages("x", 20, "Sent");
+    expect(sent.auth?.sent).toBe(true);
+    mockImap.fetchAll.mockResolvedValue([{ uid: 5, envelope: { from: [{ address: "a@a.example" }] } }]);
+    const [bare] = await provider.searchMessages("x", 20, "INBOX");
+    expect(bare.auth).toEqual({ authenticationResults: [], sent: false });
   });
 
   it("draftFingerprint changes with uid, size or envelope", async () => {

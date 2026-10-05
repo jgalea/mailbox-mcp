@@ -204,6 +204,22 @@ async function readStreamToBuffer(stream: NodeJS.ReadableStream): Promise<Buffer
   return Buffer.concat(chunks);
 }
 
+const SENT_MATCH_LIMIT = 50;
+
+// imapflow hands back the requested header lines as one raw buffer; unfold
+// continuation lines and keep the Authentication-Results values in order.
+function parseAuthResults(headers: Buffer | undefined): string[] {
+  if (!headers) return [];
+  return headers.toString("utf-8").replace(/\r?\n[ \t]+/g, " ").split(/\r?\n/)
+    .filter((line) => /^authentication-results:/i.test(line))
+    .map((line) => line.replace(/^authentication-results:\s*/i, "").trim());
+}
+
+function envelopeAddresses(envelope: any): string[] {
+  return [...(envelope?.to ?? []), ...(envelope?.cc ?? []), ...(envelope?.bcc ?? [])]
+    .map((a: any) => (a?.address ?? "").toLowerCase()).filter(Boolean);
+}
+
 export class ImapProvider implements MailProvider {
   readonly type = "imap";
   readonly capabilities: ProviderCapabilities = {
@@ -224,7 +240,7 @@ export class ImapProvider implements MailProvider {
     if (this.specialFolderCache.has(specialUse)) {
       return this.specialFolderCache.get(specialUse)!;
     }
-    const folders = await this.imap.list();
+    const folders = (await this.imap.list()) ?? [];
     const match = folders.find((f: any) => f.specialUse === specialUse);
     // Fall back to the bare name without the backslash prefix (e.g. "Drafts", "Trash")
     const resolved = match?.path ?? specialUse.replace("\\", "");
@@ -233,6 +249,7 @@ export class ImapProvider implements MailProvider {
   }
 
   async searchMessages(query: string, maxResults: number = 20, folder: string = "INBOX"): Promise<EmailSummary[]> {
+    const sentFolder = await this.findSpecialFolder("\\Sent");
     const lock = await this.imap.getMailboxLock(folder);
     try {
       const trimmed = query.trim();
@@ -243,7 +260,7 @@ export class ImapProvider implements MailProvider {
       if (uids.length === 0) return [];
 
       const messages = await this.imap.fetchAll(uids, {
-        envelope: true, flags: true, bodyStructure: true, uid: true,
+        envelope: true, flags: true, bodyStructure: true, uid: true, headers: ["authentication-results"],
       }, { uid: true });
 
       return messages.map((msg: any) => ({
@@ -255,6 +272,7 @@ export class ImapProvider implements MailProvider {
         date: msg.envelope?.date?.toISOString() ?? "",
         labels: [],
         hasAttachments: (msg.bodyStructure?.childNodes?.length ?? 0) > 0,
+        auth: { authenticationResults: parseAuthResults(msg.headers), sent: folder === sentFolder },
       }));
     } finally {
       lock.release();
@@ -332,10 +350,11 @@ export class ImapProvider implements MailProvider {
 
   private async fetchMessage(messageId: string): Promise<EmailMessage> {
     const { folder, uid } = parseImapMessageId(messageId);
+    const sentFolder = await this.findSpecialFolder("\\Sent");
     const lock = await this.imap.getMailboxLock(folder);
     try {
       const meta = await this.imap.fetchOne(uid, {
-        envelope: true, flags: true, bodyStructure: true, uid: true,
+        envelope: true, flags: true, bodyStructure: true, uid: true, headers: ["authentication-results"],
       }, { uid: true });
       if (!meta) throw new Error(`Message ${messageId} not found`);
 
@@ -362,6 +381,7 @@ export class ImapProvider implements MailProvider {
         cc: formatAddresses(meta.envelope?.cc),
         bcc: [],
         replyTo: formatAddress(meta.envelope?.replyTo?.[0]) || undefined,
+        auth: { authenticationResults: parseAuthResults(meta.headers), sent: folder === sentFolder },
         subject: meta.envelope?.subject ?? "",
         snippet: body.slice(0, 100),
         date: meta.envelope?.date?.toISOString() ?? "",
@@ -546,7 +566,7 @@ export class ImapProvider implements MailProvider {
       if (uids.length === 0) return { total, unread, recent: [] };
 
       const messages = await this.imap.fetchAll(uids, {
-        envelope: true, flags: true, bodyStructure: true, uid: true,
+        envelope: true, flags: true, bodyStructure: true, uid: true, headers: ["authentication-results"],
       }, { uid: true });
       const recent: EmailSummary[] = messages.map((msg: any) => ({
         id: `INBOX:${msg.uid}`,
@@ -557,6 +577,7 @@ export class ImapProvider implements MailProvider {
         date: msg.envelope?.date?.toISOString() ?? "",
         labels: [],
         hasAttachments: (msg.bodyStructure?.childNodes?.length ?? 0) > 0,
+        auth: { authenticationResults: parseAuthResults(msg.headers), sent: false },
       }));
       return { total, unread, recent };
     } finally {
@@ -628,12 +649,18 @@ export class ImapProvider implements MailProvider {
     }
   }
 
+  // IMAP SEARCH TO/CC/BCC is a substring match (RFC 3501), so the candidates
+  // are narrowed first and then held to an exact address on the envelope.
   async hasSentTo(address: string): Promise<boolean> {
     const sentFolder = await this.findSpecialFolder("\\Sent");
     const lock = await this.imap.getMailboxLock(sentFolder);
     try {
-      const uids = await this.imap.search({ to: address }, { uid: true });
-      return (uids || []).length > 0;
+      const uids = (await this.imap.search({ or: [{ to: address }, { cc: address }, { bcc: address }] }, { uid: true })) || [];
+      const recent = uids.slice(-SENT_MATCH_LIMIT);
+      if (recent.length === 0) return false;
+      const messages = await this.imap.fetchAll(recent, { envelope: true, uid: true }, { uid: true });
+      const needle = address.toLowerCase();
+      return messages.some((msg: any) => envelopeAddresses(msg.envelope).includes(needle));
     } finally {
       lock.release();
     }
@@ -748,6 +775,7 @@ export class ImapProvider implements MailProvider {
   async messagesSince(since: string, folder: string = "INBOX", maxResults: number = 50): Promise<EmailSummary[]> {
     const date = new Date(since);
     if (Number.isNaN(date.getTime())) throw new Error(`Invalid since timestamp: ${since}`);
+    const sentFolder = await this.findSpecialFolder("\\Sent");
     const lock = await this.imap.getMailboxLock(folder);
     try {
       // Same UID/seq mismatch as searchByText: search() returns seq nums by
@@ -757,7 +785,7 @@ export class ImapProvider implements MailProvider {
       const limited = uids.slice(-maxResults).reverse();
       if (limited.length === 0) return [];
       const messages = await this.imap.fetchAll(limited, {
-        envelope: true, flags: true, bodyStructure: true, uid: true,
+        envelope: true, flags: true, bodyStructure: true, uid: true, headers: ["authentication-results"],
       }, { uid: true });
       return messages.map((msg: any) => ({
         id: `${folder}:${msg.uid}`,
@@ -768,6 +796,7 @@ export class ImapProvider implements MailProvider {
         date: msg.envelope?.date?.toISOString() ?? "",
         labels: [],
         hasAttachments: (msg.bodyStructure?.childNodes?.length ?? 0) > 0,
+        auth: { authenticationResults: parseAuthResults(msg.headers), sent: folder === sentFolder },
       }));
     } finally {
       lock.release();

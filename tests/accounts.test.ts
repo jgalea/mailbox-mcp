@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
-import { AccountManager } from "../src/accounts.js";
+import { AccountManager, hasGuards, tightenGuards, type AccountGuards } from "../src/accounts.js";
 import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
@@ -109,6 +109,60 @@ describe("AccountManager", () => {
     expect(manager.listAccounts()).toEqual({});
     writeFileSync(join(tempDir, "accounts.json"), JSON.stringify({ accounts: { x: { provider: "gmail", email: "u@example.com", untrustedReadLock: true } } }));
     expect(() => new AccountManager(tempDir)).toThrow(/account "x".*untrustedReadLock/);
+  });
+
+  it("validates authservId as a hostname", () => {
+    expect(() => manager.addAccount("a", { provider: "gmail", email: "u@example.com", authservId: "mx.google.com; dmarc=pass" })).toThrow(/authservId must be a hostname/);
+    manager.addAccount("b", { provider: "gmail", email: "u@example.com", authservId: "mx1.messagingengine.com" });
+    expect(new AccountManager(tempDir).getAccount("b").authservId).toBe("mx1.messagingengine.com");
+  });
+
+  describe("guards can only be kept or tightened", () => {
+    const strict: AccountGuards = {
+      readOnly: true, approval: "external", untrustedReadLock: "refuse", dailySendLimit: 5,
+      allowedRecipients: ["@example.com", "boss@example.org"], authservId: "mx.example.com",
+    };
+
+    it("tightenGuards never loosens any field", () => {
+      const loose: AccountGuards = {
+        readOnly: false, draftsOnly: false, untrustedReadLock: "approval", dailySendLimit: 500,
+        allowedRecipients: ["anyone@example.com", "@attacker.example", "boss@example.org", "leak@attacker.example"], authservId: "mx.attacker.example",
+      };
+      expect(tightenGuards(strict, loose)).toEqual({
+        readOnly: true, approval: "external", untrustedReadLock: "refuse", dailySendLimit: 5,
+        allowedRecipients: ["anyone@example.com", "boss@example.org"], authservId: "mx.example.com",
+      });
+      expect(tightenGuards(strict, {})).toEqual(strict);
+      expect(tightenGuards(strict, { allowedRecipients: [] })).toMatchObject({ allowedRecipients: strict.allowedRecipients });
+      expect(tightenGuards(strict, { allowedRecipients: ["leak@attacker.example"] })).toMatchObject({ allowedRecipients: strict.allowedRecipients });
+    });
+
+    it("tightenGuards takes a stricter incoming value", () => {
+      expect(tightenGuards({}, { draftsOnly: true, dailySendLimit: 3, allowedRecipients: ["a@example.com"], untrustedReadLock: "approval" }))
+        .toEqual({ draftsOnly: true, dailySendLimit: 3, allowedRecipients: ["a@example.com"], untrustedReadLock: "approval" });
+      expect(tightenGuards({ untrustedReadLock: "approval", dailySendLimit: 10 }, { untrustedReadLock: "refuse", dailySendLimit: 2, readOnly: true }))
+        .toEqual({ untrustedReadLock: "refuse", dailySendLimit: 2, readOnly: true });
+      expect(tightenGuards({}, { authservId: "mx.attacker.example" })).toEqual({});
+    });
+
+    it("replaceAccount keeps the guards and takes the new connection details", () => {
+      manager.addAccount("work", { provider: "gmail", email: "old@example.com", ...strict });
+      const merged = manager.replaceAccount("work", { provider: "gmail", email: "new@example.com", dailySendLimit: 100 });
+      expect(merged).toEqual({ provider: "gmail", email: "new@example.com", ...strict });
+      expect(new AccountManager(tempDir).getAccount("work")).toEqual(merged);
+      expect(() => manager.replaceAccount("nope", { provider: "gmail", email: "x@example.com" })).toThrow("not found");
+    });
+
+    it("removeAccount refuses while any guard is set, and says to edit accounts.json", () => {
+      manager.addAccount("work", { provider: "gmail", email: "u@example.com", ...strict });
+      expect(() => manager.removeAccount("work")).toThrow(/safety settings \(readOnly, allowedRecipients, dailySendLimit, approval, untrustedReadLock\).*Edit accounts.json/);
+      expect(manager.listAccounts().work).toBeDefined();
+      manager.addAccount("open", { provider: "gmail", email: "o@example.com", allowedRecipients: [] });
+      manager.removeAccount("open");
+      expect(manager.listAccounts().open).toBeUndefined();
+      expect(hasGuards({})).toBe(false);
+      expect(hasGuards({ draftsOnly: true })).toBe(true);
+    });
   });
 
   it("refuses to load an accounts.json with a malformed allowlist", () => {
