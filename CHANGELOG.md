@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.13.1 — 2026-10-10
+
+### Fixed
+- Jev triage only accepts a category that is one of its own options. An answer naming an inherited property such as `toString` was treated as valid and could print non-label text outside the untrusted-content fence.
+
 ## 0.13.0 — 2026-10-10
 
 ### Added

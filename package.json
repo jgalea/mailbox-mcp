@@ -1,6 +1,6 @@
 {
   "name": "mailbox-mcp",
-  "version": "0.13.0",
+  "version": "0.13.1",
   "mcpName": "io.github.jgalea/mailbox-mcp",
   "description": "Multi-account, multi-provider email MCP server",
   "type": "module",

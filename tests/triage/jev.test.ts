@@ -54,6 +54,13 @@ describe("triageMessages", () => {
     expect([...results.keys()]).toEqual(["4"]);
   });
 
+  it("rejects inherited property names as categories", async () => {
+    const fetchImpl = vi.fn().mockResolvedValueOnce(answer("toString")).mockResolvedValueOnce(answer("__proto__"));
+    const { results, failed } = await triageMessages([msg("1"), msg("2")], "k", fetchImpl as unknown as typeof fetch);
+    expect(failed).toBe(2);
+    expect(results.size).toBe(0);
+  });
+
   it("triages at most 25 messages", async () => {
     const fetchImpl = vi.fn().mockImplementation(async () => answer("fyi"));
     const many = Array.from({ length: 40 }, (_, i) => msg(String(i)));

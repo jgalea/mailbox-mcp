@@ -70,7 +70,7 @@ async function triageOne(m: EmailSummary, key: string, fetchImpl: typeof fetch):
     answers?: { category?: { choice?: unknown; confidence?: unknown }; urgent?: { noul?: unknown } };
   };
   const choice = data.answers?.category?.choice;
-  if (typeof choice !== "string" || !(choice in CATEGORIES)) return null;
+  if (typeof choice !== "string" || !Object.hasOwn(CATEGORIES, choice)) return null;
   const confidence = Number(data.answers?.category?.confidence);
   const urgent = Number(data.answers?.urgent?.noul);
   return {
