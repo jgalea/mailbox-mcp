@@ -1,6 +1,6 @@
 # Changelog
 
-## Unreleased
+## 0.13.0 — 2026-10-10
 
 ### Added
 - **Optional inbox triage with Jev.** With `MAILBOX_MCP_TYPESAFE_API_KEY` (or `TYPESAFE_API_KEY`) set, `inbox_summary` labels each recent message (needs reply, FYI, newsletter, receipt, notification, suspicious, plus urgent) using TypeSafe's Jev decision model, with a confidence figure. Labels come from a fixed set and sit outside the untrusted-content fence. Sends sender, subject and snippet for up to 25 messages to TypeSafe; off and sending nothing when no key is set.
