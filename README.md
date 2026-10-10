@@ -298,6 +298,18 @@ Calls to tools in disabled groups fail with an error naming the group to enable.
 "env": { "MAILBOX_MCP_PROFILE": "draft", "MAILBOX_MCP_TOOLS": "core,attachments" }
 ```
 
+## Inbox triage with Jev (optional)
+
+Set `MAILBOX_MCP_TYPESAFE_API_KEY` (or `TYPESAFE_API_KEY`) to a key from [TypeSafe](https://console.typesafe.ai/keys) and `inbox_summary` labels each recent message: needs reply, FYI, newsletter, receipt, notification or suspicious, plus urgent when the sender needs something within about a day, with a confidence figure.
+
+```json
+"env": { "MAILBOX_MCP_TYPESAFE_API_KEY": "your-key" }
+```
+
+Jev is a decision model: it can only pick from the fixed options above, so text in an email can't steer it into doing anything else. Labels come from those fixed options, never from email text, and are printed outside the untrusted-content fence.
+
+This sends each message's sender, subject and snippet (capped at 2,000 characters) to TypeSafe's API. Leave the key unset and nothing is sent; the tool behaves exactly as before. Up to 25 messages are triaged per call; any that fail are reported as unclassified rather than guessed.
+
 ## Sending attachments
 
 `send_email`, `reply_email`, `forward_email`, and `create_draft` accept an optional `attachments` parameter — an array of local file paths. The server reads each file, detects its MIME type from the extension, and embeds it in the outgoing message (or draft).

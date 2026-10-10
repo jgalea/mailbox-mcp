@@ -1,4 +1,5 @@
 import { registerTool } from "./registry.js";
+import { formatTriage, jevApiKey, triageMessages } from "../triage/jev.js";
 
 registerTool(
   {
@@ -86,7 +87,7 @@ registerTool(
 registerTool(
   {
     name: "inbox_summary",
-    description: "Get a summary of recent inbox activity including total and unread counts",
+    description: "Get a summary of recent inbox activity including total and unread counts. When a TypeSafe API key is configured, each recent message is also triaged (needs reply, FYI, newsletter, receipt, notification, suspicious) by the Jev decision model.",
     inputSchema: {
       type: "object" as const,
       properties: { account: { type: "string", description: "Account alias" } },
@@ -97,8 +98,18 @@ registerTool(
     const provider = await ctx.getProvider(args.account as string);
     const summary = await provider.inboxSummary();
     const f = ctx.fence;
-    const recentLines = summary.recent.map((m) => `- ${f.sender(m)}: ${f.content(m.subject, "subject")} (${f.header(m.date, "date")})`);
-    const text = [`**Total:** ${summary.total}`, `**Unread:** ${summary.unread}`, "", "**Recent:**", ...recentLines].join("\n");
+    const key = jevApiKey();
+    const triage = key && summary.recent.length ? await triageMessages(summary.recent, key) : null;
+    // Triage labels come from a fixed set in our own code, so they sit outside the fence.
+    const recentLines = summary.recent.map((m) => {
+      const t = triage?.results.get(m.id);
+      return `- ${t ? formatTriage(t) + " " : ""}${f.sender(m)}: ${f.content(m.subject, "subject")} (${f.header(m.date, "date")})`;
+    });
+    const lines = [`**Total:** ${summary.total}`, `**Unread:** ${summary.unread}`, "", "**Recent:**", ...recentLines];
+    if (triage) {
+      lines.push("", `Triage by Jev (TypeSafe AI): ${triage.results.size} of ${summary.recent.length} messages classified${triage.failed ? `, ${triage.failed} could not be classified` : ""}.`);
+    }
+    const text = lines.join("\n");
     return { content: [{ type: "text", text }] };
   }
 );
