@@ -15,10 +15,26 @@ const SERVER = join(dirname(fileURLToPath(import.meta.url)), "..", "dist", "serv
 const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 const alive = (p: ChildProcess) => p.exitCode === null && p.signalCode === null;
 
+// The signal handlers install at module load, before main() logs this line, so
+// waiting for it (rather than a fixed sleep) means a cold start after a build
+// can't receive the signal before the handlers exist.
 async function startServer(): Promise<ChildProcess> {
-  const p = spawn(process.execPath, [SERVER], { stdio: ["pipe", "ignore", "ignore"] });
-  await sleep(500); // let main() connect the stdio transport
-  if (!alive(p)) throw new Error("server exited during startup");
+  const p = spawn(process.execPath, [SERVER], { stdio: ["pipe", "ignore", "pipe"] });
+  await new Promise<void>((resolve, reject) => {
+    let log = "";
+    const timer = setTimeout(() => reject(new Error("server did not start within 4s")), 4000);
+    p.stderr!.on("data", (chunk) => {
+      log += chunk;
+      if (log.includes("server running on stdio")) {
+        clearTimeout(timer);
+        resolve();
+      }
+    });
+    p.on("exit", () => {
+      clearTimeout(timer);
+      reject(new Error("server exited during startup"));
+    });
+  });
   return p;
 }
 
