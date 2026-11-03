@@ -117,13 +117,15 @@ function isToolEnabled(name: string): boolean {
 // Per-instance tool profile, selected with MAILBOX_MCP_PROFILE. Composes with
 // MAILBOX_MCP_TOOLS: a tool is exposed only when both allow it. "read" is
 // exactly the tools annotated readOnlyHint; "draft" is everything except the
-// tools below, which can make mail leave the account or change what future
-// mail says to a third party.
+// tools below, which can make mail leave the account, change what future
+// mail says to a third party, or change which accounts the server holds (a
+// new account on a server the session controls is an exfiltration channel).
 export type ToolProfile = "full" | "draft" | "read";
 
 export const DRAFT_PROFILE_EXCLUDED = new Set([
   "send_email", "reply_email", "forward_email", "send_draft", "send_template",
   "create_filter", "set_vacation", "set_signature", "unsubscribe", "bulk_unsubscribe",
+  "authenticate", "reauth", "remove_account",
 ]);
 
 export function activeProfile(): ToolProfile {
@@ -140,7 +142,7 @@ function isAllowedByProfile(name: string, profile: ToolProfile): boolean {
 }
 
 function profileRefusal(name: string, profile: ToolProfile): ToolResult {
-  const why = profile === "read" ? "exposes read-only tools only" : "hides every tool that can make mail leave the account";
+  const why = profile === "read" ? "exposes read-only tools only" : "hides every tool that can make mail leave the account or change which accounts it holds";
   return {
     content: [{ type: "text", text: `Tool "${name}" is not available: this server runs with MAILBOX_MCP_PROFILE="${profile}", which ${why}. The profile is set in the server's environment and cannot be changed from here.` }],
     isError: true,

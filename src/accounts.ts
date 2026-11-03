@@ -147,8 +147,13 @@ export class AccountManager {
     }
     validateGuards(config);
     this.data.accounts[alias] = config;
-    ensureDir(join(this.configDir, "accounts", alias));
-    this.save();
+    try {
+      ensureDir(join(this.configDir, "accounts", alias));
+      this.save();
+    } catch (err) {
+      delete this.data.accounts[alias];
+      throw err;
+    }
   }
 
   removeAccount(alias: string): void {

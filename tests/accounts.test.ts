@@ -1,6 +1,6 @@
 import { describe, it, expect, beforeEach, afterEach } from "vitest";
 import { AccountManager, hasGuards, type AccountGuards } from "../src/accounts.js";
-import { existsSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { tmpdir } from "node:os";
 
@@ -162,5 +162,15 @@ describe("AccountManager", () => {
     } finally {
       delete process.env.MAILBOX_MCP_CONFIG_DIR;
     }
+  });
+  it("leaves no account in memory when saving accounts.json fails", () => {
+    mkdirSync(join(tempDir, "accounts.json"));
+    expect(() => manager.addAccount("ghost", { provider: "gmail", email: "user@example.com" })).toThrow(/EISDIR/);
+    expect(manager.listAccounts()).toEqual({});
+    expect(() => manager.getAccount("ghost")).toThrow(/not found/);
+
+    rmSync(join(tempDir, "accounts.json"), { recursive: true });
+    manager.addAccount("ghost", { provider: "gmail", email: "user@example.com" });
+    expect(new AccountManager(tempDir).getAccount("ghost")).toEqual({ provider: "gmail", email: "user@example.com" });
   });
 });
