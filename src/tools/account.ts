@@ -2,6 +2,26 @@ import { registerTool } from "./registry.js";
 import { clearSendLimit } from "./write.js";
 import { guardNames, hasGuards, type AccountGuards } from "../accounts.js";
 
+// The env credentials go only to the servers the env also names. Without
+// that pin a session could pass its own host and have the server send the
+// configured password there.
+function envCredentials(
+  prefix: "IMAP" | "JMAP",
+  targets: Array<[envVar: string, value: string | undefined]>
+): { username?: string; password?: string; refusal?: string } {
+  const username = process.env[`MAILBOX_MCP_${prefix}_USERNAME`];
+  const password = process.env[`MAILBOX_MCP_${prefix}_PASSWORD`];
+  if (!username && !password) return {};
+  const names = [...new Set(targets.map(([v]) => v))];
+  for (const [envVar, value] of targets) {
+    const pinned = process.env[envVar]?.trim().toLowerCase();
+    if (!pinned || !value || value.trim().toLowerCase() !== pinned) {
+      return { refusal: `Refused: the ${prefix} credentials in the server environment are only used when ${names.join(" and ")} ${names.length > 1 ? "are set and the account's hosts match them" : "is set and the account's host matches it"}. Pass username and password explicitly for any other server.` };
+    }
+  }
+  return { username, password };
+}
+
 registerTool(
   {
     name: "list_accounts",
@@ -33,7 +53,7 @@ registerTool(
 registerTool(
   {
     name: "authenticate",
-    description: "Add a new email account. Refuses an alias that already exists (edit accounts.json or use reauth). For Gmail: opens a browser for OAuth. For IMAP/JMAP: stores encrypted credentials. Sensitive fields (username, password) can also be set via environment variables.",
+    description: "Add a new email account. Refuses an alias that already exists (edit accounts.json or use reauth). For Gmail: opens a browser for OAuth. For IMAP/JMAP: stores encrypted credentials. Sensitive fields (username, password) can also come from MAILBOX_MCP_IMAP_USERNAME/PASSWORD or MAILBOX_MCP_JMAP_USERNAME/PASSWORD, which are only used for the hosts pinned in MAILBOX_MCP_IMAP_HOST and MAILBOX_MCP_IMAP_SMTP_HOST, or MAILBOX_MCP_JMAP_HOST.",
     inputSchema: {
       type: "object" as const,
       properties: {
@@ -91,8 +111,14 @@ registerTool(
       const port = (args.port as number) ?? 993;
       const smtpHost = args.smtpHost as string;
       const smtpPort = (args.smtpPort as number) ?? 587;
-      const username = (args.username as string) || process.env.MAILBOX_MCP_IMAP_USERNAME;
-      const password = (args.password as string) || process.env.MAILBOX_MCP_IMAP_PASSWORD;
+      let username = args.username as string;
+      let password = args.password as string;
+      if (!username || !password) {
+        const env = envCredentials("IMAP", [["MAILBOX_MCP_IMAP_HOST", host], ["MAILBOX_MCP_IMAP_SMTP_HOST", smtpHost]]);
+        if (env.refusal) return { content: [{ type: "text", text: env.refusal }], isError: true };
+        username ||= env.username as string;
+        password ||= env.password as string;
+      }
       const passphrase = process.env.MAILBOX_MCP_PASSPHRASE ?? "";
 
       if (!host || !smtpHost || !username || !password) {
@@ -111,10 +137,20 @@ registerTool(
 
     if (provider === "jmap") {
       const host = args.host as string;
-      const username = (args.username as string) || process.env.MAILBOX_MCP_JMAP_USERNAME;
-      const password = (args.password as string) || process.env.MAILBOX_MCP_JMAP_PASSWORD;
-      const passphrase = process.env.MAILBOX_MCP_PASSPHRASE ?? "";
       const sessionUrl = args.sessionUrl as string | undefined;
+      let username = args.username as string;
+      let password = args.password as string;
+      if (!username || !password) {
+        let sessionHost: string | undefined = host;
+        if (sessionUrl) {
+          try { sessionHost = new URL(sessionUrl).hostname; } catch { sessionHost = undefined; }
+        }
+        const env = envCredentials("JMAP", [["MAILBOX_MCP_JMAP_HOST", host], ["MAILBOX_MCP_JMAP_HOST", sessionHost]]);
+        if (env.refusal) return { content: [{ type: "text", text: env.refusal }], isError: true };
+        username ||= env.username as string;
+        password ||= env.password as string;
+      }
+      const passphrase = process.env.MAILBOX_MCP_PASSPHRASE ?? "";
 
       if (!host || !username || !password) {
         return { content: [{ type: "text", text: "JMAP accounts require: host, username, and password" }], isError: true };

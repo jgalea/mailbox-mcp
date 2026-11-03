@@ -136,4 +136,73 @@ describe("account tools", () => {
     expect(result.isError).toBe(true);
     expect(result.content[0].text).toContain("Gmail-only");
   });
+  describe("environment credentials", () => {
+    const ENV = [
+      "MAILBOX_MCP_PASSPHRASE", "MAILBOX_MCP_IMAP_USERNAME", "MAILBOX_MCP_IMAP_PASSWORD", "MAILBOX_MCP_IMAP_HOST", "MAILBOX_MCP_IMAP_SMTP_HOST",
+      "MAILBOX_MCP_JMAP_USERNAME", "MAILBOX_MCP_JMAP_PASSWORD", "MAILBOX_MCP_JMAP_HOST",
+    ];
+    const imap = { alias: "work", provider: "imap", email: "me@example.com", host: "imap.example.com", smtpHost: "smtp.example.com" };
+    const jmap = { alias: "work", provider: "jmap", email: "me@example.com", host: "mail.example.com" };
+
+    beforeEach(() => {
+      process.env.MAILBOX_MCP_PASSPHRASE = "test-passphrase";
+      process.env.MAILBOX_MCP_IMAP_USERNAME = "env-user";
+      process.env.MAILBOX_MCP_IMAP_PASSWORD = "env-pass";
+      process.env.MAILBOX_MCP_JMAP_USERNAME = "env-user";
+      process.env.MAILBOX_MCP_JMAP_PASSWORD = "env-pass";
+    });
+
+    afterEach(() => {
+      for (const key of ENV) delete process.env[key];
+    });
+
+    it("refuses the IMAP env credentials when no host is pinned", async () => {
+      const result = await handleToolCall("authenticate", imap, ctx);
+      expect(result.isError).toBe(true);
+      expect(result.content[0].text).toMatch(/MAILBOX_MCP_IMAP_HOST and MAILBOX_MCP_IMAP_SMTP_HOST/);
+      expect(ctx.accountManager.listAccounts()).toEqual({});
+    });
+
+    it("refuses the IMAP env credentials for a host other than the pinned one", async () => {
+      process.env.MAILBOX_MCP_IMAP_HOST = "imap.example.com";
+      process.env.MAILBOX_MCP_IMAP_SMTP_HOST = "smtp.example.com";
+      for (const hosts of [{ host: "imap.attacker.example" }, { smtpHost: "smtp.attacker.example" }]) {
+        const result = await handleToolCall("authenticate", { ...imap, ...hosts }, ctx);
+        expect(result.isError, JSON.stringify(hosts)).toBe(true);
+        expect(result.content[0].text).toMatch(/^Refused/);
+      }
+      expect(ctx.accountManager.listAccounts()).toEqual({});
+    });
+
+    it("uses the IMAP env credentials for the pinned hosts", async () => {
+      process.env.MAILBOX_MCP_IMAP_HOST = "IMAP.example.com";
+      process.env.MAILBOX_MCP_IMAP_SMTP_HOST = "smtp.example.com";
+      const result = await handleToolCall("authenticate", imap, ctx);
+      expect(result.isError).toBeUndefined();
+      const { decryptCredentials } = await import("../../src/auth/imap-auth.js");
+      expect(decryptCredentials(tempDir, "work", "test-passphrase")).toEqual({ username: "env-user", password: "env-pass" });
+    });
+
+    it("still accepts explicit credentials for any host", async () => {
+      const result = await handleToolCall("authenticate", { ...imap, host: "imap.other.example", username: "u", password: "p" }, ctx);
+      expect(result.isError).toBeUndefined();
+    });
+
+    it("refuses the JMAP env credentials unless the host and any sessionUrl match the pinned host", async () => {
+      const unpinned = await handleToolCall("authenticate", jmap, ctx);
+      expect(unpinned.isError).toBe(true);
+      expect(unpinned.content[0].text).toMatch(/MAILBOX_MCP_JMAP_HOST is set/);
+
+      process.env.MAILBOX_MCP_JMAP_HOST = "mail.example.com";
+      const otherHost = await handleToolCall("authenticate", { ...jmap, host: "mail.attacker.example" }, ctx);
+      expect(otherHost.isError).toBe(true);
+      const otherSession = await handleToolCall("authenticate", { ...jmap, sessionUrl: "https://mail.attacker.example/jmap" }, ctx);
+      expect(otherSession.isError).toBe(true);
+      expect(ctx.accountManager.listAccounts()).toEqual({});
+
+      const ok = await handleToolCall("authenticate", { ...jmap, sessionUrl: "https://mail.example.com/jmap/session" }, ctx);
+      expect(ok.isError).toBeUndefined();
+      expect(ctx.accountManager.getAccount("work")).toMatchObject({ provider: "jmap", host: "mail.example.com" });
+    });
+  });
 });

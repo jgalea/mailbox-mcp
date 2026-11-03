@@ -62,7 +62,8 @@ describe("MAILBOX_MCP_PROFILE", () => {
     expect([...DRAFT_PROFILE_EXCLUDED].sort()).toEqual([
       "bulk_unsubscribe", "create_filter", "forward_email", "reply_email", "send_draft", "send_email",
       "send_template", "set_signature", "set_vacation", "unsubscribe",
-    ]);
+      "authenticate", "reauth", "remove_account",
+    ].sort());
   });
 
   it("refuses calls to hidden tools with an error naming the profile", async () => {
@@ -73,7 +74,7 @@ describe("MAILBOX_MCP_PROFILE", () => {
     expect(ctx.getProvider).not.toHaveBeenCalled();
 
     process.env.MAILBOX_MCP_PROFILE = "draft";
-    for (const tool of ["send_email", "send_draft", "set_vacation", "unsubscribe"]) {
+    for (const tool of ["send_email", "send_draft", "set_vacation", "unsubscribe", "authenticate", "reauth", "remove_account"]) {
       const result = await handleToolCall(tool, { account: "personal" }, ctx);
       expect(result.isError, tool).toBe(true);
       expect(result.content[0].text, tool).toMatch(/MAILBOX_MCP_PROFILE="draft"/);
@@ -97,6 +98,7 @@ describe("MAILBOX_MCP_PROFILE", () => {
     expect(listed).toContain("search_emails");
     expect(listed).not.toContain("send_email");
     expect(listed).not.toContain("bulk_trash");
+    expect(listed).not.toContain("authenticate");
 
     const byGroup = await handleToolCall("bulk_trash", { account: "personal", query: "x" }, ctx);
     expect(byGroup.content[0].text).toContain("MAILBOX_MCP_TOOLS");
