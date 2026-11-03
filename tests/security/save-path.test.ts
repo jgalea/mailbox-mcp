@@ -1,5 +1,5 @@
 import { describe, it, expect, beforeEach, afterEach, vi } from "vitest";
-import { existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
+import { existsSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, renameSync, rmSync, statSync, symlinkSync, writeFileSync } from "node:fs";
 import { join } from "node:path";
 import { isInsideProtectedDir, pathIsInside, protectedDirs, saveFile, validateSavePath } from "../../src/security/save-path.js";
 import { loadAttachmentFromPath } from "../../src/security/attachment-loader.js";
@@ -152,6 +152,55 @@ describe("saveFile writes only to the canonical directory it validated", () => {
     };
     expect(() => saveFile(target, "x.eml", Buffer.from("x"), swapIn)).toThrow(/inside the mailbox-mcp config or log directory/);
     expect(existsSync(join(configDir, "x.eml"))).toBe(false);
+  });
+
+  it("a parent directory swapped for a symlink after the last check cannot redirect the write", () => {
+    const victim = join(configDir, "accounts.json");
+    writeFileSync(victim, "{\"accounts\":{}}");
+    const parent = join(plain, "swap");
+    const moved = join(plain, "swap-moved");
+    const target = join(parent, "out");
+    const swapIn = () => {
+      renameSync(parent, moved);
+      symlinkSync(configDir, parent);
+      mkdirSync(join(configDir, "out"));
+    };
+    const cwd = process.cwd();
+    expect(() => saveFile(target, "accounts.json", Buffer.from("{\"accounts\":{\"x\":{}}}"), undefined, swapIn)).toThrow(/moved .* while saving/);
+    expect(readFileSync(victim, "utf-8")).toBe("{\"accounts\":{}}");
+    expect(readdirSync(join(configDir, "out"))).toEqual([]);
+    expect(readdirSync(join(moved, "out"))).toEqual([]);
+    expect(process.cwd()).toBe(cwd);
+  });
+
+  it("a final directory swapped for a symlink leaves an existing file elsewhere untouched", () => {
+    const victim = join(configDir, "x.eml");
+    writeFileSync(victim, "keep");
+    const target = join(plain, "final");
+    const swapIn = () => {
+      renameSync(target, join(plain, "final-moved"));
+      symlinkSync(configDir, target);
+    };
+    expect(() => saveFile(target, "x.eml", Buffer.from("overwrite"), undefined, swapIn)).toThrow(/while saving/);
+    expect(readFileSync(victim, "utf-8")).toBe("keep");
+  });
+
+  it("a directory removed and replaced by a symlink before the open fails without writing", () => {
+    const target = join(plain, "gone");
+    const swapIn = () => {
+      rmSync(target, { recursive: true, force: true });
+      symlinkSync(configDir, target);
+    };
+    const cwd = process.cwd();
+    expect(() => saveFile(target, "x.eml", Buffer.from("x"), undefined, swapIn)).toThrow();
+    expect(existsSync(join(configDir, "x.eml"))).toBe(false);
+    expect(process.cwd()).toBe(cwd);
+  });
+
+  it("restores the working directory after a successful write", () => {
+    const cwd = process.cwd();
+    saveFile(join(plain, "ok"), "a.eml", Buffer.from("a"));
+    expect(process.cwd()).toBe(cwd);
   });
 });
 

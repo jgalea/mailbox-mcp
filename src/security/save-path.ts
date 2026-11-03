@@ -1,5 +1,5 @@
 import { resolve, dirname, join, basename, sep } from "node:path";
-import { closeSync, constants, existsSync, fchmodSync, lstatSync, mkdirSync, openSync, realpathSync, statSync, writeSync } from "node:fs";
+import { closeSync, constants, existsSync, fchmodSync, fstatSync, ftruncateSync, lstatSync, mkdirSync, openSync, realpathSync, statSync, unlinkSync, writeSync } from "node:fs";
 import { homedir } from "node:os";
 
 export const DEFAULT_DOWNLOAD_DIR = join(homedir(), "Downloads", "mailbox-mcp");
@@ -88,12 +88,71 @@ export function validateSavePath(dir: string): string {
   return resolved;
 }
 
+function currentDirOrHome(): string {
+  try {
+    return process.cwd();
+  } catch {
+    return homedir();
+  }
+}
+
+// Node has no openat, so the process changes into the validated directory and
+// opens the file by its bare name. The working directory is held by inode, so
+// a directory component swapped for a symlink after the chdir cannot redirect
+// the open. Where the held directory really is comes from the kernel through
+// realpath("."), checked before the open and again after it.
+function openInPinnedDir(finalDir: string, name: string, beforeOpen?: () => void): number {
+  const assertPinned = () => {
+    let real: string;
+    try {
+      real = realpathSync.native(".");
+    } catch {
+      throw new Error(`Refusing to write ${join(finalDir, name)}: the directory was removed while saving.`);
+    }
+    if (real !== finalDir) {
+      throw new Error(`Refusing to write ${join(finalDir, name)}: the directory moved to ${real} while saving.`);
+    }
+  };
+  assertPinned();
+  beforeOpen?.();
+  let fd: number;
+  let created = true;
+  try {
+    fd = openSync(name, constants.O_WRONLY | constants.O_CREAT | constants.O_EXCL | constants.O_NOFOLLOW | constants.O_NONBLOCK, 0o600);
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== "EEXIST") throw err;
+    created = false;
+    fd = openSync(name, constants.O_WRONLY | constants.O_NOFOLLOW | constants.O_NONBLOCK);
+  }
+  try {
+    if (!fstatSync(fd).isFile()) throw new Error(`Refusing to write ${join(finalDir, name)}: not a regular file.`);
+    assertPinned();
+  } catch (err) {
+    closeSync(fd);
+    if (created) {
+      try {
+        unlinkSync(name);
+      } catch {
+        // Already gone with its directory.
+      }
+    }
+    throw err;
+  }
+  return fd;
+}
+
 // The one way tool output reaches disk. The directory is validated, created,
-// then validated again in its now-existing canonical form, so a component
-// that turned into a symlink in between cannot move the write; the file is
-// opened with O_NOFOLLOW so a symlink planted under the final name is refused
-// rather than followed.
-export function saveFile(dir: string, filename: string, data: Buffer, afterMkdir?: () => void): string {
+// then validated again in its now-existing canonical form. The file is opened
+// by name inside that directory held as the working directory, with
+// O_NOFOLLOW so a symlink planted under the final name is refused, and an
+// existing file is truncated only after the open is known to be in place.
+export function saveFile(
+  dir: string,
+  filename: string,
+  data: Buffer,
+  afterMkdir?: () => void,
+  beforeOpen?: () => void,
+): string {
   const name = basename(filename);
   if (!name || name === "." || name === "..") throw new Error(`Refusing to save a file named "${filename}"`);
   mkdirSync(validateSavePath(dir), { recursive: true });
@@ -108,12 +167,19 @@ export function saveFile(dir: string, filename: string, data: Buffer, afterMkdir
   } catch (err) {
     if ((err as NodeJS.ErrnoException).code !== "ENOENT") throw err;
   }
-  const fd = openSync(filePath, constants.O_WRONLY | constants.O_CREAT | constants.O_TRUNC | constants.O_NOFOLLOW, 0o600);
+  const previous = currentDirOrHome();
+  process.chdir(finalDir);
   try {
-    writeSync(fd, data);
-    fchmodSync(fd, 0o600);
+    const fd = openInPinnedDir(finalDir, name, beforeOpen);
+    try {
+      ftruncateSync(fd, 0);
+      writeSync(fd, data);
+      fchmodSync(fd, 0o600);
+    } finally {
+      closeSync(fd);
+    }
   } finally {
-    closeSync(fd);
+    process.chdir(previous);
   }
   return filePath;
 }
