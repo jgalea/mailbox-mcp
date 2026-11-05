@@ -3,6 +3,7 @@ import {
   ensureReplyPrefix,
   ensureForwardPrefix,
   splitAddressList,
+  replyAllRecipients,
 } from "../../src/providers/headers.js";
 
 describe("ensureReplyPrefix", () => {
@@ -62,5 +63,25 @@ describe("splitAddressList", () => {
   });
   it("trims surrounding whitespace", () => {
     expect(splitAddressList("  a@x.com  ,  b@y.com  ")).toEqual(["a@x.com", "b@y.com"]);
+  });
+});
+
+describe("replyAllRecipients", () => {
+  it("drops the account's own address from To and Cc", () => {
+    const r = replyAllRecipients("a@example.com", ["me@example.com", "b@example.com"], ["Me <ME@example.com>", "c@example.com"], ["me@example.com"]);
+    expect(r.to).toEqual(["a@example.com", "b@example.com"]);
+    expect(r.cc).toEqual(["c@example.com"]);
+  });
+
+  it("removes duplicates across To and Cc, keeping the To entry", () => {
+    const r = replyAllRecipients("a@example.com", ["A <a@example.com>", "b@example.com"], ["b@example.com", "c@example.com"], []);
+    expect(r.to).toEqual(["a@example.com", "b@example.com"]);
+    expect(r.cc).toEqual(["c@example.com"]);
+  });
+
+  it("falls back to the reply address when it is the sender's own", () => {
+    const r = replyAllRecipients("me@example.com", [], [], ["me@example.com"]);
+    expect(r.to).toEqual(["me@example.com"]);
+    expect(r.cc).toEqual([]);
   });
 });

@@ -1,7 +1,7 @@
 import { Readable } from "node:stream";
 import { createHash } from "node:crypto";
 import { buildRawMimeMessage } from "./mime.js";
-import { ensureReplyPrefix, ensureForwardPrefix, splitAddressList, extractAddress } from "./headers.js";
+import { ensureReplyPrefix, ensureForwardPrefix, splitAddressList, extractAddress, replyAllRecipients } from "./headers.js";
 
 // Lightweight types matching the gmail_v1 shapes we use, to avoid importing
 // the massive googleapis type definitions (which add ~2min to tsc builds).
@@ -273,15 +273,21 @@ export class GmailProvider implements MailProvider {
     const msgId = getHeader(headers, "Message-ID");
 
     const replyAddress = replyTo || from;
-    const recipients = options?.replyAll
-      ? [replyAddress, ...splitAddressList(to), ...splitAddressList(cc)].filter(Boolean)
-      : [replyAddress];
+    let recipients = [replyAddress];
+    let replyCc = options?.cc;
+    if (options?.replyAll) {
+      const profile = await this.gmail.users.getProfile({ userId: "me" });
+      const self = [profile.data.emailAddress, options.from].filter((a): a is string => !!a);
+      const all = replyAllRecipients(replyAddress, splitAddressList(to), splitAddressList(cc), self);
+      recipients = all.to;
+      replyCc = [...all.cc, ...(options.cc ?? [])];
+    }
 
     const reSubject = ensureReplyPrefix(subject);
     const encodeOpts: GmailEncodeOptions = {
       from: options?.from,
       html: options?.html,
-      cc: options?.cc,
+      cc: replyCc?.length ? replyCc : undefined,
       bcc: options?.bcc,
       inReplyTo: msgId,
       references: msgId,

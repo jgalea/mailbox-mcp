@@ -1,7 +1,7 @@
 // src/providers/jmap.ts
 import { createHash } from "node:crypto";
 import { stripCRLF, validateNoSSRF } from "../security/validation.js";
-import { ensureReplyPrefix, ensureForwardPrefix, extractAddress } from "./headers.js";
+import { ensureReplyPrefix, ensureForwardPrefix, extractAddress, replyAllRecipients } from "./headers.js";
 import type {
   MailProvider, ProviderCapabilities, EmailSummary, EmailMessage,
   EmailThread, Label, SendOptions, ReplyOptions, ForwardOptions,
@@ -480,10 +480,15 @@ export class JmapProvider implements MailProvider {
   async replyToMessage(messageId: string, body: string, options?: ReplyOptions): Promise<string> {
     const original = await this.fetchMessage(messageId);
     const replyAddress = original.replyTo || original.from;
-    const to = [replyAddress];
-    if (options?.replyAll) { to.push(...original.to, ...original.cc); }
+    let to = [replyAddress];
+    let cc = options?.cc;
+    if (options?.replyAll) {
+      const all = replyAllRecipients(replyAddress, original.to, original.cc, [this.email, ...(options.from ? [options.from] : [])]);
+      to = all.to;
+      cc = [...all.cc, ...(options.cc ?? [])];
+    }
     const subject = ensureReplyPrefix(original.subject);
-    return this.sendMessage(to, subject, body, { from: options?.from, cc: options?.cc, bcc: options?.bcc, html: options?.html, attachments: options?.attachments });
+    return this.sendMessage(to, subject, body, { from: options?.from, cc: cc?.length ? cc : undefined, bcc: options?.bcc, html: options?.html, attachments: options?.attachments });
   }
 
   async forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string> {

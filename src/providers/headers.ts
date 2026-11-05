@@ -87,3 +87,16 @@ export function splitAddressList(raw: string): string[] {
   if (trimmed) out.push(trimmed);
   return out;
 }
+
+export function replyAllRecipients(replyAddress: string, to: string[], cc: string[], self: string[]): { to: string[]; cc: string[] } {
+  const own = new Set(self.map((a) => extractAddress(a)));
+  const seen = new Set<string>();
+  const keep = (list: string[]) => list.filter((a) => {
+    const key = extractAddress(a);
+    if (!key || own.has(key) || seen.has(key)) return false;
+    seen.add(key);
+    return true;
+  });
+  const primary = keep([replyAddress, ...to].filter(Boolean));
+  return { to: primary.length ? primary : [replyAddress], cc: keep(cc) };
+}
