@@ -146,6 +146,51 @@ describe("ImapProvider", () => {
     expect(mockImap.append).toHaveBeenCalledWith("Drafts", expect.any(Buffer), ["\\Draft"]);
   });
 
+  describe("reply threading", () => {
+    const original = {
+      uid: 7,
+      envelope: { messageId: "<orig@example.net>", from: [{ address: "sender@example.net" }], to: [{ address: "test@example.com" }], subject: "Hello", date: new Date(0) },
+      flags: new Set(),
+      bodyStructure: undefined,
+      headers: Buffer.from("References: <a@example.net>\r\n <b@example.net>\r\nSubject: Hello\r\n"),
+    };
+
+    it("createDraft with inReplyTo writes In-Reply-To and References", async () => {
+      mockImap.list.mockResolvedValue([{ path: "Drafts", specialUse: "\\Drafts" }]);
+      mockImap.fetchOne.mockResolvedValue(original);
+      await provider.createDraft(["sender@example.net"], "Re: Hello", "body", { inReplyTo: "INBOX:7" });
+      expect(mockImap.fetchOne).toHaveBeenCalledWith(7, expect.objectContaining({ envelope: true }), { uid: true });
+      const raw = (mockImap.append.mock.calls[0][1] as Buffer).toString("utf-8");
+      expect(raw).toContain("In-Reply-To: <orig@example.net>");
+      expect(raw).toContain("References: <a@example.net> <b@example.net> <orig@example.net>");
+    });
+
+    it("createDraft without inReplyTo adds no threading headers", async () => {
+      mockImap.list.mockResolvedValue([{ path: "Drafts", specialUse: "\\Drafts" }]);
+      await provider.createDraft(["a@b.com"], "s", "body");
+      const raw = (mockImap.append.mock.calls[0][1] as Buffer).toString("utf-8");
+      expect(raw).not.toMatch(/In-Reply-To|References/);
+    });
+
+    it("References falls back to the original Message-ID when the original has none", async () => {
+      mockImap.list.mockResolvedValue([{ path: "Drafts", specialUse: "\\Drafts" }]);
+      mockImap.fetchOne.mockResolvedValue({ ...original, headers: undefined });
+      await provider.createDraft(["sender@example.net"], "Re: Hello", "body", { inReplyTo: "INBOX:7" });
+      const raw = (mockImap.append.mock.calls[0][1] as Buffer).toString("utf-8");
+      expect(raw).toContain("References: <orig@example.net>\r\n");
+    });
+
+    it("replyToMessage sends with In-Reply-To and References", async () => {
+      mockImap.fetchOne.mockResolvedValue(original);
+      await provider.replyToMessage("INBOX:7", "thanks");
+      expect(mockTransport.sendMail).toHaveBeenCalledWith(expect.objectContaining({
+        subject: "Re: Hello",
+        inReplyTo: "<orig@example.net>",
+        references: "<a@example.net> <b@example.net> <orig@example.net>",
+      }));
+    });
+  });
+
   it("createDraft falls back to standard Drafts folder name when no specialUse match", async () => {
     mockImap.list.mockResolvedValue([{ path: "INBOX", specialUse: "\\Inbox" }]);
     mockImap.append.mockResolvedValue(undefined);

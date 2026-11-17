@@ -215,6 +215,12 @@ function parseAuthResults(headers: Buffer | undefined): string[] {
     .map((line) => line.replace(/^authentication-results:\s*/i, "").trim());
 }
 
+function parseReferences(headers: Buffer | undefined): string {
+  if (!headers) return "";
+  const line = headers.toString("utf-8").replace(/\r?\n[ \t]+/g, " ").split(/\r?\n/).find((l) => /^references:/i.test(l));
+  return line ? line.replace(/^references:\s*/i, "").trim() : "";
+}
+
 function envelopeAddresses(envelope: any): string[] {
   return [...(envelope?.from ?? []), ...(envelope?.to ?? []), ...(envelope?.cc ?? []), ...(envelope?.bcc ?? [])]
     .map((a: any) => (a?.address ?? "").toLowerCase()).filter(Boolean);
@@ -394,12 +400,26 @@ export class ImapProvider implements MailProvider {
     }
   }
 
+  private async fetchReplyHeaders(messageId: string): Promise<{ inReplyTo?: string; references?: string }> {
+    const { folder, uid } = parseImapMessageId(messageId);
+    const lock = await this.imap.getMailboxLock(folder);
+    try {
+      const meta = await this.imap.fetchOne(uid, { envelope: true, headers: ["references"] }, { uid: true });
+      const inReplyTo = meta ? meta.envelope?.messageId : undefined;
+      if (!inReplyTo) return {};
+      const references = parseReferences(meta ? meta.headers : undefined);
+      return { inReplyTo, references: references ? `${references} ${inReplyTo}` : inReplyTo };
+    } finally {
+      lock.release();
+    }
+  }
+
   async readThread(threadId: string): Promise<EmailThread> {
     const message = await this.readMessage(threadId);
     return { id: threadId, subject: message.subject, messages: [message] };
   }
 
-  async sendMessage(to: string[], subject: string, body: string, options?: SendOptions): Promise<string> {
+  async sendMessage(to: string[], subject: string, body: string, options?: SendOptions & { inReplyTo?: string; references?: string }): Promise<string> {
     // No alias list to check against on plain IMAP/SMTP — the relay is the
     // authority on which senders it will accept, and it rejects at send time.
     const result = await this.smtp.sendMail({
@@ -408,6 +428,8 @@ export class ImapProvider implements MailProvider {
       cc: options?.cc ? stripCRLF(options.cc.join(", ")) : undefined,
       bcc: options?.bcc ? stripCRLF(options.bcc.join(", ")) : undefined,
       subject: stripCRLF(subject),
+      inReplyTo: options?.inReplyTo ? stripCRLF(options.inReplyTo) : undefined,
+      references: options?.references ? stripCRLF(options.references) : undefined,
       [options?.html ? "html" : "text"]: body,
       attachments: toNodemailerAttachments(options?.attachments),
     });
@@ -425,7 +447,8 @@ export class ImapProvider implements MailProvider {
       cc = [...all.cc, ...(options.cc ?? [])];
     }
     const subject = ensureReplyPrefix(original.subject);
-    return this.sendMessage(to, subject, body, { from: options?.from, cc: cc?.length ? cc : undefined, bcc: options?.bcc, html: options?.html, attachments: options?.attachments });
+    const threading = await this.fetchReplyHeaders(messageId);
+    return this.sendMessage(to, subject, body, { from: options?.from, cc: cc?.length ? cc : undefined, bcc: options?.bcc, html: options?.html, attachments: options?.attachments, ...threading });
   }
 
   async forwardMessage(messageId: string, to: string[], options?: ForwardOptions): Promise<string> {
@@ -438,12 +461,14 @@ export class ImapProvider implements MailProvider {
   }
 
   async createDraft(to: string[], subject: string, body: string, options?: DraftOptions): Promise<string> {
+    const threading = options?.inReplyTo ? await this.fetchReplyHeaders(options.inReplyTo) : {};
     const raw = buildRawMimeMessage({
       from: options?.from ?? this.email,
       to, subject, body,
       cc: options?.cc, bcc: options?.bcc,
       html: options?.html,
       attachments: options?.attachments,
+      ...threading,
     });
 
     const draftsFolder = await this.findSpecialFolder("\\Drafts");

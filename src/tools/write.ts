@@ -229,7 +229,7 @@ registerTool(
     const from = args.from as string | undefined;
     const html = args.html as boolean | undefined;
     if (gate.draftsOnly) {
-      const id = await gate.provider.createDraft(derived, stripFencing(original.subject), body, {
+      const id = await gate.provider.createDraft(derived, ensureReplyPrefix(stripFencing(original.subject)), body, {
         from,
         cc: cc.length ? cc : undefined, bcc: bcc.length ? bcc : undefined,
         html, inReplyTo: messageId, attachments,
