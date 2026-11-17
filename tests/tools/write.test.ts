@@ -230,6 +230,13 @@ describe("write tools", () => {
       const call = vi.mocked(mockProvider.createDraft).mock.calls[0];
       expect(call[0]).toEqual(["Sender <sender@example.net>"]);
       expect(call[3]?.inReplyTo).toBe("msg-1");
+      expect(call[1]).toBe("Re: Hello");
+    });
+
+    it("reply_email does not double the Re: prefix on the draft subject", async () => {
+      vi.mocked(mockProvider.readMessage).mockResolvedValue({ ...ORIGINAL, subject: "Re: Hello" });
+      await handleToolCall("reply_email", { account: "personal", message_id: "msg-1", body: "b" }, ctx);
+      expect(vi.mocked(mockProvider.createDraft).mock.calls[0][1]).toBe("Re: Hello");
     });
 
     it("forward_email creates a forward draft with the original body", async () => {
